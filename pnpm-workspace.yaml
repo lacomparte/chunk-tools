@@ -1,0 +1,5 @@
+packages:
+  - 'packages/*'
+  - 'plugins/vite-*'
+  - 'plugins/next-*'
+  - 'shared/*'

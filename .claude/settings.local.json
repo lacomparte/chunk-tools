@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm test:*)",
+      "Bash(npx tsc:*)",
+      "Bash(pnpm test:*)",
+      "Bash(npx vitest run)",
+      "Bash(pnpm test:e2e:*)",
+      "Bash(pnpm build:*)",
+      "Bash(grep:*)",
+      "Bash(node:*)",
+      "Bash(cat:*)",
+      "Bash(pnpm build:chunk-analyzer:*)",
+      "Bash(git init:*)",
+      "Bash(git remote add:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ]
+  }
+}

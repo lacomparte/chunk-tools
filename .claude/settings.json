@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rg:*)",
+      "WebFetch(domain:martinfowler.com)",
+      "Bash(npm run:*)",
+      "Bash(sed:*)",
+      "Bash(find:*)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(pnpm type-check:*)",
+      "Bash(pnpm tsc:*)",
+      "Bash(pnpm exec tsc:*)"
+    ],
+    "deny": []
+  },
+  "enabledMcpjsonServers": ["github", "context7"],
+  "outputStyle": "Explanatory",
+  "cleanupPeriodDays": 365,
+  "includeCoAuthoredBy": true
+}
