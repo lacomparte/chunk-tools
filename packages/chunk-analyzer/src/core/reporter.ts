@@ -7,6 +7,64 @@ import type {
 } from '../types/index.js';
 import { formatSize } from '../utils/format-size.util.js';
 
+/**
+ * 원본 크기와 압축 크기를 포맷팅합니다.
+ * gzip/brotli 중 사용 가능한 것만 표시합니다.
+ */
+const formatSizeWithCompression = (
+  rawSize: number,
+  gzipSize: number,
+  brotliSize?: number,
+): string => {
+  const raw = formatSize(rawSize);
+  const hasGzip = gzipSize > 0;
+  const hasBrotli = brotliSize && brotliSize > 0;
+
+  if (hasGzip && hasBrotli) {
+    return `${raw} → gzip: ${formatSize(gzipSize)} / brotli: ${formatSize(brotliSize)}`;
+  }
+  if (hasGzip) {
+    return `${raw} → gzip: ${formatSize(gzipSize)}`;
+  }
+  if (hasBrotli) {
+    return `${raw} → brotli: ${formatSize(brotliSize)}`;
+  }
+
+  return raw;
+};
+
+/**
+ * reason 문자열에서 기존 크기 정보를 제거합니다.
+ * 예: "큰 패키지 (385.8KB)" → "큰 패키지"
+ */
+const stripSizeFromReason = (reason: string): string =>
+  reason.replace(/\s*\([^)]*[KMG]?B\)\s*$/, '').trim();
+
+/**
+ * config 파일용 크기 정보 포맷팅
+ * 예: "(385.8KB) (gzip: 130.4KB, brotli: 113.9KB)"
+ */
+const formatConfigSizeComment = (
+  rawSize: number,
+  gzipSize: number,
+  brotliSize?: number,
+): string => {
+  const raw = formatSize(rawSize);
+  const hasGzip = gzipSize > 0;
+  const hasBrotli = brotliSize && brotliSize > 0;
+
+  if (hasGzip && hasBrotli) {
+    return `(${raw}) (gzip: ${formatSize(gzipSize)}, brotli: ${formatSize(brotliSize)})`;
+  }
+  if (hasGzip) {
+    return `(${raw}) (gzip: ${formatSize(gzipSize)})`;
+  }
+  if (hasBrotli) {
+    return `(${raw}) (brotli: ${formatSize(brotliSize)})`;
+  }
+  return `(${raw})`;
+};
+
 export const createAnalysisResult = (
   packages: PackageInfo[],
   suggestions: ChunkGroup[],
@@ -16,6 +74,7 @@ export const createAnalysisResult = (
   summary: {
     totalSize: packages.reduce((sum, pkg) => sum + pkg.totalSize, 0),
     totalGzipSize: packages.reduce((sum, pkg) => sum + pkg.gzipSize, 0),
+    totalBrotliSize: packages.reduce((sum, pkg) => sum + pkg.brotliSize, 0),
     packageCount: packages.length,
     groupCount: suggestions.length,
   },
@@ -49,12 +108,29 @@ const formatSummary = (
 ): void => {
   lines.push(pc.bold('Summary'));
   lines.push(pc.dim('─'.repeat(60)));
-  lines.push(
-    `  Total size:     ${pc.yellow(formatSize(summary.totalSize))} (gzip: ${formatSize(summary.totalGzipSize)})`,
-  );
+
+  const sizeInfo = formatSummarySizeInfo(summary);
+  lines.push(`  Total size:     ${sizeInfo}`);
   lines.push(`  Packages:       ${pc.yellow(String(summary.packageCount))}`);
   lines.push(`  Chunk groups:   ${pc.yellow(String(summary.groupCount))}`);
   lines.push('');
+};
+
+const formatSummarySizeInfo = (summary: AnalysisResult['summary']): string => {
+  const raw = pc.yellow(formatSize(summary.totalSize));
+  const hasGzip = summary.totalGzipSize > 0;
+  const hasBrotli = summary.totalBrotliSize > 0;
+
+  if (hasGzip && hasBrotli) {
+    return `${raw} → gzip: ${pc.cyan(formatSize(summary.totalGzipSize))} / brotli: ${pc.magenta(formatSize(summary.totalBrotliSize))}`;
+  }
+  if (hasGzip) {
+    return `${raw} → gzip: ${pc.cyan(formatSize(summary.totalGzipSize))}`;
+  }
+  if (hasBrotli) {
+    return `${raw} → brotli: ${pc.magenta(formatSize(summary.totalBrotliSize))}`;
+  }
+  return raw;
 };
 
 const formatTop15Packages = (
@@ -72,13 +148,29 @@ const formatTop15Packages = (
     const rank = String(i + 1).padStart(2);
     const name = pkg.name.padEnd(maxNameLen);
     const size = formatSize(pkg.totalSize).padStart(10);
-    const gzip = formatSize(pkg.gzipSize).padStart(8);
     const barLen = Math.ceil((pkg.totalSize / totalSize) * 30);
     const bar = pc.green('█'.repeat(barLen));
+    const compressionInfo = formatPackageCompression(pkg.gzipSize, pkg.brotliSize);
 
-    lines.push(`  ${pc.dim(rank)}. ${name} ${pc.yellow(size)} ${pc.dim(`(${gzip})`)} ${bar}`);
+    lines.push(`  ${pc.dim(rank)}. ${name} ${pc.yellow(size)} ${compressionInfo} ${bar}`);
   });
   lines.push('');
+};
+
+const formatPackageCompression = (gzipSize: number, brotliSize: number): string => {
+  const hasGzip = gzipSize > 0;
+  const hasBrotli = brotliSize > 0;
+
+  if (hasGzip && hasBrotli) {
+    return pc.dim(`→ g:${formatSize(gzipSize)} / b:${formatSize(brotliSize)}`);
+  }
+  if (hasGzip) {
+    return pc.dim(`→ gzip: ${formatSize(gzipSize)}`);
+  }
+  if (hasBrotli) {
+    return pc.dim(`→ brotli: ${formatSize(brotliSize)}`);
+  }
+  return '';
 };
 
 const formatSuggestedGroups = (
@@ -92,7 +184,9 @@ const formatSuggestedGroups = (
   lines.push('const CHUNK_GROUPS = [');
 
   for (const group of groups) {
-    lines.push(`  ${pc.dim(`// ${group.reason} (${formatSize(group.estimatedSize)})`)}`);
+    const reasonWithoutSize = stripSizeFromReason(group.reason);
+    const sizeInfo = formatSizeWithCompression(group.estimatedSize, group.gzipSize, group.brotliSize);
+    lines.push(`  ${pc.dim(`// ${reasonWithoutSize} (${sizeInfo})`)}`);
     lines.push(`  {`);
     lines.push(`    name: ${pc.green(`'${group.name}'`)},`);
     formatPatterns(lines, group.patterns);
@@ -146,7 +240,10 @@ export function createManualChunks(groups: ChunkGroup[] = CHUNK_GROUPS) {
 }
 `.trim();
 
-export const generateConfigCode = (suggestions: ChunkGroup[]): string => {
+export const generateConfigCode = (
+  suggestions: ChunkGroup[],
+  cacheKey?: string,
+): string => {
   const lines: string[] = [];
 
   lines.push(`// Auto-generated by chunk-analyzer`);
@@ -154,10 +251,20 @@ export const generateConfigCode = (suggestions: ChunkGroup[]): string => {
   lines.push('');
   lines.push('export type ChunkGroup = { name: string; patterns: string[] };');
   lines.push('');
+
+  // lockfile 해시 기반 캐시키 (의존성 변경 감지용)
+  if (cacheKey) {
+    lines.push(`// Lockfile hash for cache invalidation`);
+    lines.push(`export const CACHE_KEY = '${cacheKey}';`);
+    lines.push('');
+  }
+
   lines.push('export const CHUNK_GROUPS: ChunkGroup[] = [');
 
   for (const group of suggestions) {
-    lines.push(`  // ${group.reason} (${formatSize(group.estimatedSize)})`);
+    const reasonWithoutSize = stripSizeFromReason(group.reason);
+    const sizeInfo = formatConfigSizeComment(group.estimatedSize, group.gzipSize, group.brotliSize);
+    lines.push(`  // ${reasonWithoutSize} ${sizeInfo}`);
     lines.push(`  {`);
     lines.push(`    name: '${group.name}',`);
     formatPatternsPlain(lines, group.patterns);

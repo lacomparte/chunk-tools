@@ -38,9 +38,19 @@ import { CHUNK_GROUPS, createManualChunks } from './chunk-groups.config';
 
 export default defineConfig({
   plugins: [
+    // 1. JSON stats - chunk-analyzer용 (브라우저에 안 열림)
     visualizer({
       filename: 'dist/stats.json',
-      json: true,
+      template: 'raw-data',
+      open: false,
+      gzipSize: true,
+      brotliSize: true,
+    }),
+    // 2. HTML treemap - 시각화용 (브라우저에 열림)
+    visualizer({
+      filename: 'dist/report.html',
+      template: 'treemap',
+      open: true,  // false로 변경하면 브라우저 안 열림
       gzipSize: true,
       brotliSize: true,
     }),
@@ -55,15 +65,40 @@ export default defineConfig({
 });
 ```
 
+> ⚠️ **중요**: visualizer를 2개 설정해야 합니다.
+> - `template: 'raw-data'` + `open: false` → chunk-analyzer가 읽는 JSON
+> - `template: 'treemap'` + `open: true` → 브라우저에서 시각화
+
 ### 3. package.json scripts 수정
+
+**방법 A: 기본 (단순 프로젝트용)**
 
 ```json
 {
   "scripts": {
-    "build": "npx chunk-analyzer -q && vite build"
+    "build": "npx chunk-analyzer -q"
   }
 }
 ```
+
+chunk-analyzer가 내부에서 빌드를 실행합니다.
+
+**방법 B: 2단계 빌드 (권장)**
+
+```json
+{
+  "scripts": {
+    "build": "pnpm build:analyze && tsc && vite build --mode prd",
+    "build:analyze": "OPEN_VISUALIZER=false npx chunk-analyzer -b 'tsc && vite build --mode prd'"
+  }
+}
+```
+
+이 방식의 장점:
+1. **chunk-analyzer 빌드**: 분석용 빌드 실행 → config 갱신 (브라우저 열지 않음)
+2. **프로덕션 빌드**: 갱신된 config로 최종 빌드 실행 (vite.config.ts의 `open` 설정 따름)
+
+> 💡 **팁**: 2단계 빌드는 매 빌드마다 최신 분석 결과를 config에 반영합니다.
 
 ### 4. 빌드 실행
 
@@ -100,15 +135,88 @@ chunk-analyzer -t 50
 
 ## CLI 옵션
 
-| 옵션 | 설명 | 기본값 |
-|------|------|--------|
-| `-c, --config <file>` | config 출력 경로 | `chunk-groups.config.ts` |
-| `-s, --stats <file>` | stats.json 경로 | `dist/stats.json` |
-| `-b, --build <cmd>` | 빌드 명령어 | `vite build` |
-| `-t, --threshold <kb>` | 대형 패키지 기준 (KB) | `100` |
-| `-q, --quiet` | 분석 결과 출력 생략 | `false` |
-| `-f, --format <type>` | 출력 형식: text, json, config | `text` |
-| `--ignore <pattern>` | 무시할 패키지 (반복 가능) | - |
+| 옵션                   | 설명                          | 기본값                   |
+| ---------------------- | ----------------------------- | ------------------------ |
+| `-c, --config <file>`  | config 출력 경로              | `chunk-groups.config.ts` |
+| `-s, --stats <file>`   | stats.json 경로               | `dist/stats.json`        |
+| `-b, --build <cmd>`    | 빌드 명령어                   | `vite build`             |
+| `-t, --threshold <kb>` | 대형 패키지 기준 (KB)         | `100`                    |
+| `-q, --quiet`          | 분석 결과 출력 생략           | `false`                  |
+| `-f, --format <type>`  | 출력 형식: text, json, config | `text`                   |
+| `--ignore <pattern>`   | 무시할 패키지 (반복 가능)     | -                        |
+
+## .chunkgroupignore 파일
+
+특정 패키지를 청크 그룹핑에서 제외하려면 프로젝트 루트에 `.chunkgroupignore` 파일을 생성하세요.
+제외된 패키지는 Vite의 기본 `splitVendorChunkPlugin` 동작을 따릅니다.
+
+### 파일 형식
+
+`.gitignore`와 동일한 형식을 사용합니다:
+
+```gitignore
+# 주석
+lodash              # 정확히 lodash만 제외
+lodash*             # lodash, lodash.debounce, lodash.throttle 등 모두 제외
+@sentry/*           # @sentry/react, @sentry/browser 등 모두 제외
+
+# 부정 패턴: 특정 패키지만 다시 포함
+@tanstack/*         # 모든 @tanstack 패키지 제외
+!@tanstack/react-query  # 단, react-query는 그룹핑에 포함
+```
+
+### 패턴 처리 순서
+
+1. 모든 패턴을 순서대로 적용
+2. 마지막 매칭 결과가 최종 결정
+3. `!`로 시작하면 "포함", 그 외는 "제외"
+
+### CLI --ignore와 함께 사용
+
+`.chunkgroupignore` 파일과 `--ignore` 옵션을 함께 사용할 수 있습니다:
+
+```bash
+# .chunkgroupignore 파일의 패턴 + CLI 패턴 모두 적용
+chunk-analyzer --ignore "dayjs"
+```
+
+CLI 패턴이 파일 패턴보다 나중에 적용되므로 우선순위가 높습니다.
+
+## 캐싱 (의존성 변경 감지)
+
+chunk-analyzer는 **lockfile 해시 기반 캐싱**을 통해 불필요한 빌드를 스킵합니다.
+
+### 동작 원리
+
+```
+npx chunk-analyzer 실행
+├─ lockfile 해시 계산 (pnpm-lock.yaml / package-lock.json / yarn.lock)
+├─ chunk-groups.config.ts의 CACHE_KEY와 비교
+├─ 해시가 같으면 → 빌드 스킵! (약 7ms)
+└─ 해시가 다르면 → 빌드 + 분석 + config 갱신
+```
+
+### 생성되는 config 파일
+
+```typescript
+// chunk-groups.config.ts
+export const CACHE_KEY = 'e0d3e9db625afd4e20ffc4d8481d3a71';  // lockfile MD5 해시
+
+export const CHUNK_GROUPS: ChunkGroup[] = [
+  // ...
+];
+```
+
+### 캐시 무효화
+
+다음 경우에 자동으로 캐시가 무효화됩니다:
+
+- `pnpm add/remove` 등으로 패키지 추가/삭제
+- lockfile 직접 수정
+- `chunk-groups.config.ts` 파일 삭제
+- `CACHE_KEY` 수동 삭제
+
+> 💡 **강제 재분석**: config 파일을 삭제하면 다음 빌드에서 재분석됩니다.
 
 ## 동작 방식
 
@@ -133,29 +241,29 @@ chunk-analyzer는 **의존성 그래프 기반** 분석을 수행합니다:
 
 다음 패키지들은 자동으로 최적의 그룹으로 분류됩니다:
 
-| 그룹 | 패키지 | 설명 |
-|------|--------|------|
-| `react-core` | react, react-dom, scheduler, react-is, react-fast-compare, react-style-singleton, use-callback-ref, use-sidecar, hoist-non-react-statics, prop-types | React 핵심 런타임 |
-| `react-extensions` | react-error-boundary, react-helmet-async, react-remove-scroll, react-transition-group | React 확장 라이브러리 |
-| `state-management` | @tanstack/react-query, @tanstack/query-core, jotai, zustand, recoil | 상태 관리 |
-| `styling` | styled-components, stylis, @emotion/react, @emotion/styled | CSS-in-JS |
-| `routing` | react-router, react-router-dom, @remix-run/router, use-query-params | 라우팅 |
-| `utils` | axios, dayjs, lodash, lodash.throttle, lodash.debounce, jwt-decode | 유틸리티 |
-| `monitoring` | @datadog/browser-rum, @datadog/browser-logs, @sentry/react, @sentry/browser | 모니터링 |
-| `animation` | framer-motion, motion, lottie-web, lottie-react | 애니메이션 |
-| `heavy-ui` | swiper, react-virtuoso, @tanstack/react-virtual | 무거운 UI 컴포넌트 |
-| `form` | react-hook-form, @hookform/resolvers, zod, yup | 폼 관리 |
+| 그룹               | 패키지                                                                                                                                               | 설명                  |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| `react-core`       | react, react-dom, scheduler, react-is, react-fast-compare, react-style-singleton, use-callback-ref, use-sidecar, hoist-non-react-statics, prop-types | React 핵심 런타임     |
+| `react-extensions` | react-error-boundary, react-helmet-async, react-remove-scroll, react-transition-group                                                                | React 확장 라이브러리 |
+| `state-management` | @tanstack/react-query, @tanstack/query-core, jotai, zustand, recoil                                                                                  | 상태 관리             |
+| `styling`          | styled-components, stylis, @emotion/react, @emotion/styled                                                                                           | CSS-in-JS             |
+| `routing`          | react-router, react-router-dom, @remix-run/router, use-query-params                                                                                  | 라우팅                |
+| `utils`            | axios, dayjs, lodash, lodash.throttle, lodash.debounce, jwt-decode                                                                                   | 유틸리티              |
+| `monitoring`       | @datadog/browser-rum, @datadog/browser-logs, @sentry/react, @sentry/browser                                                                          | 모니터링              |
+| `animation`        | framer-motion, motion, lottie-web, lottie-react                                                                                                      | 애니메이션            |
+| `heavy-ui`         | swiper, react-virtuoso, @tanstack/react-virtual                                                                                                      | 무거운 UI 컴포넌트    |
+| `form`             | react-hook-form, @hookform/resolvers, zod, yup                                                                                                       | 폼 관리               |
 
 > 📌 **버전 기준**: 2024년 12월 기준 최신 안정 버전 (React 18.x, React Router 6.x, TanStack Query v5 등)
 
 ### 청크 크기 권장 기준
 
-| 구분 | 크기 | 설명 |
-|------|------|------|
-| 최소 | 20KB 이상 | HTTP 오버헤드 방지 |
-| 이상적 | 50~150KB | 병렬 로딩 + 캐시 균형 |
-| 대형 분리 | 100KB 이상 | 기본 threshold |
-| 최대 | 250KB 이하 | 초기 로딩 지연 방지 |
+| 구분      | 크기       | 설명                  |
+| --------- | ---------- | --------------------- |
+| 최소      | 20KB 이상  | HTTP 오버헤드 방지    |
+| 이상적    | 50~150KB   | 병렬 로딩 + 캐시 균형 |
+| 대형 분리 | 100KB 이상 | 기본 threshold        |
+| 최대      | 250KB 이하 | 초기 로딩 지연 방지   |
 
 ### 워크플로우
 
@@ -217,9 +325,19 @@ import { CHUNK_GROUPS, createManualChunks } from './chunk-groups.config';
 
 export default defineConfig({
   plugins: [
+    // 1. JSON stats - for chunk-analyzer (no browser open)
     visualizer({
       filename: 'dist/stats.json',
-      json: true,
+      template: 'raw-data',
+      open: false,
+      gzipSize: true,
+      brotliSize: true,
+    }),
+    // 2. HTML treemap - for visualization (opens in browser)
+    visualizer({
+      filename: 'dist/report.html',
+      template: 'treemap',
+      open: true,  // set to false to disable browser open
       gzipSize: true,
       brotliSize: true,
     }),
@@ -234,15 +352,40 @@ export default defineConfig({
 });
 ```
 
+> ⚠️ **Important**: You need TWO visualizer configurations.
+> - `template: 'raw-data'` + `open: false` → JSON for chunk-analyzer
+> - `template: 'treemap'` + `open: true` → Visual treemap in browser
+
 ### 3. Update package.json scripts
+
+**Option A: Basic (for simple projects)**
 
 ```json
 {
   "scripts": {
-    "build": "npx chunk-analyzer -q && vite build"
+    "build": "npx chunk-analyzer -q"
   }
 }
 ```
+
+chunk-analyzer runs the build internally.
+
+**Option B: Two-stage build (recommended)**
+
+```json
+{
+  "scripts": {
+    "build": "pnpm build:analyze && tsc && vite build --mode prd",
+    "build:analyze": "OPEN_VISUALIZER=false npx chunk-analyzer -b 'tsc && vite build --mode prd'"
+  }
+}
+```
+
+Benefits of this approach:
+1. **chunk-analyzer build**: Runs analysis build → updates config (no browser open)
+2. **Production build**: Runs final build with updated config (follows vite.config.ts `open` setting)
+
+> 💡 **Tip**: Two-stage build ensures every build uses the latest analysis results in config.
 
 ### 4. Run build
 
@@ -279,15 +422,88 @@ chunk-analyzer -t 50
 
 ## CLI Options
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `-c, --config <file>` | Config output path | `chunk-groups.config.ts` |
-| `-s, --stats <file>` | Stats.json path | `dist/stats.json` |
-| `-b, --build <cmd>` | Build command | `vite build` |
-| `-t, --threshold <kb>` | Large package threshold in KB | `100` |
-| `-q, --quiet` | Suppress analysis output | `false` |
-| `-f, --format <type>` | Output format: text, json, config | `text` |
-| `--ignore <pattern>` | Ignore packages (repeatable) | - |
+| Option                 | Description                       | Default                  |
+| ---------------------- | --------------------------------- | ------------------------ |
+| `-c, --config <file>`  | Config output path                | `chunk-groups.config.ts` |
+| `-s, --stats <file>`   | Stats.json path                   | `dist/stats.json`        |
+| `-b, --build <cmd>`    | Build command                     | `vite build`             |
+| `-t, --threshold <kb>` | Large package threshold in KB     | `100`                    |
+| `-q, --quiet`          | Suppress analysis output          | `false`                  |
+| `-f, --format <type>`  | Output format: text, json, config | `text`                   |
+| `--ignore <pattern>`   | Ignore packages (repeatable)      | -                        |
+
+## .chunkgroupignore File
+
+To exclude specific packages from chunk grouping, create a `.chunkgroupignore` file in your project root.
+Excluded packages will follow Vite's default `splitVendorChunkPlugin` behavior.
+
+### File Format
+
+Uses the same format as `.gitignore`:
+
+```gitignore
+# Comments
+lodash              # Exclude only lodash
+lodash*             # Exclude lodash, lodash.debounce, lodash.throttle, etc.
+@sentry/*           # Exclude @sentry/react, @sentry/browser, etc.
+
+# Negation patterns: Include specific packages back
+@tanstack/*         # Exclude all @tanstack packages
+!@tanstack/react-query  # But include react-query in grouping
+```
+
+### Pattern Processing Order
+
+1. All patterns are applied in order
+2. Last matching result is the final decision
+3. Patterns starting with `!` mean "include", others mean "exclude"
+
+### Using with CLI --ignore
+
+You can use `.chunkgroupignore` file together with `--ignore` option:
+
+```bash
+# Both .chunkgroupignore patterns + CLI patterns are applied
+chunk-analyzer --ignore "dayjs"
+```
+
+CLI patterns are applied after file patterns, so they have higher priority.
+
+## Caching (Dependency Change Detection)
+
+chunk-analyzer uses **lockfile hash-based caching** to skip unnecessary builds.
+
+### How It Works
+
+```
+npx chunk-analyzer runs
+├─ Calculate lockfile hash (pnpm-lock.yaml / package-lock.json / yarn.lock)
+├─ Compare with CACHE_KEY in chunk-groups.config.ts
+├─ If hash matches → Skip build! (~7ms)
+└─ If hash differs → Build + analyze + update config
+```
+
+### Generated Config File
+
+```typescript
+// chunk-groups.config.ts
+export const CACHE_KEY = 'e0d3e9db625afd4e20ffc4d8481d3a71';  // lockfile MD5 hash
+
+export const CHUNK_GROUPS: ChunkGroup[] = [
+  // ...
+];
+```
+
+### Cache Invalidation
+
+Cache is automatically invalidated when:
+
+- Packages added/removed via `pnpm add/remove`
+- Lockfile modified directly
+- `chunk-groups.config.ts` file deleted
+- `CACHE_KEY` manually removed
+
+> 💡 **Force re-analysis**: Delete the config file to trigger re-analysis on next build.
 
 ## How It Works
 
@@ -312,29 +528,29 @@ chunk-analyzer uses **dependency graph-based** analysis:
 
 The following packages are automatically classified into optimal groups:
 
-| Group | Packages | Description |
-|-------|----------|-------------|
-| `react-core` | react, react-dom, scheduler, react-is, react-fast-compare, react-style-singleton, use-callback-ref, use-sidecar, hoist-non-react-statics, prop-types | React core runtime |
-| `react-extensions` | react-error-boundary, react-helmet-async, react-remove-scroll, react-transition-group | React extension libraries |
-| `state-management` | @tanstack/react-query, @tanstack/query-core, jotai, zustand, recoil | State management |
-| `styling` | styled-components, stylis, @emotion/react, @emotion/styled | CSS-in-JS |
-| `routing` | react-router, react-router-dom, @remix-run/router, use-query-params | Routing |
-| `utils` | axios, dayjs, lodash, lodash.throttle, lodash.debounce, jwt-decode | Utilities |
-| `monitoring` | @datadog/browser-rum, @datadog/browser-logs, @sentry/react, @sentry/browser | Monitoring |
-| `animation` | framer-motion, motion, lottie-web, lottie-react | Animation |
-| `heavy-ui` | swiper, react-virtuoso, @tanstack/react-virtual | Heavy UI components |
-| `form` | react-hook-form, @hookform/resolvers, zod, yup | Form management |
+| Group              | Packages                                                                                                                                             | Description               |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| `react-core`       | react, react-dom, scheduler, react-is, react-fast-compare, react-style-singleton, use-callback-ref, use-sidecar, hoist-non-react-statics, prop-types | React core runtime        |
+| `react-extensions` | react-error-boundary, react-helmet-async, react-remove-scroll, react-transition-group                                                                | React extension libraries |
+| `state-management` | @tanstack/react-query, @tanstack/query-core, jotai, zustand, recoil                                                                                  | State management          |
+| `styling`          | styled-components, stylis, @emotion/react, @emotion/styled                                                                                           | CSS-in-JS                 |
+| `routing`          | react-router, react-router-dom, @remix-run/router, use-query-params                                                                                  | Routing                   |
+| `utils`            | axios, dayjs, lodash, lodash.throttle, lodash.debounce, jwt-decode                                                                                   | Utilities                 |
+| `monitoring`       | @datadog/browser-rum, @datadog/browser-logs, @sentry/react, @sentry/browser                                                                          | Monitoring                |
+| `animation`        | framer-motion, motion, lottie-web, lottie-react                                                                                                      | Animation                 |
+| `heavy-ui`         | swiper, react-virtuoso, @tanstack/react-virtual                                                                                                      | Heavy UI components       |
+| `form`             | react-hook-form, @hookform/resolvers, zod, yup                                                                                                       | Form management           |
 
 > 📌 **Version Reference**: Based on latest stable versions as of December 2024 (React 18.x, React Router 6.x, TanStack Query v5, etc.)
 
 ### Recommended Chunk Size Guidelines
 
-| Category | Size | Description |
-|----------|------|-------------|
-| Minimum | 20KB+ | Avoid HTTP overhead |
-| Ideal | 50-150KB | Balance parallel loading + cache |
-| Large separation | 100KB+ | Default threshold |
-| Maximum | 250KB- | Prevent initial load delay |
+| Category         | Size     | Description                      |
+| ---------------- | -------- | -------------------------------- |
+| Minimum          | 20KB+    | Avoid HTTP overhead              |
+| Ideal            | 50-150KB | Balance parallel loading + cache |
+| Large separation | 100KB+   | Default threshold                |
+| Maximum          | 250KB-   | Prevent initial load delay       |
 
 ### Workflow
 

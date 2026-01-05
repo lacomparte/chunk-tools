@@ -14,6 +14,8 @@ import {
   generateConfigCode,
 } from '../../core/reporter.js';
 import type { AnalyzerOptions, VisualizerStats, VisualizerStatsV2 } from '../../types/index.js';
+import { calculateLockfileHash, isCacheValid } from '../../utils/cache.util.js';
+import { findIgnoreFile, parseIgnoreFile } from '../../utils/ignore-file.util.js';
 
 type CliArgs = {
   command: 'default' | 'analyze' | 'init' | 'help' | 'version';
@@ -169,6 +171,17 @@ ${pc.bold('Options:')}
   -t, --threshold <kb>    Large package threshold in KB (default: 100)
   -q, --quiet             Suppress analysis output, only generate config
   --ignore <pattern>      Ignore packages matching pattern (repeatable)
+
+${pc.bold('.chunkgroupignore file:')}
+  Create a .chunkgroupignore file to exclude packages from grouping.
+  Uses .gitignore-style patterns (glob, negation with !)
+
+  Example .chunkgroupignore:
+    ${pc.dim('# Exclude all lodash packages')}
+    ${pc.dim('lodash*')}
+    ${pc.dim('# Exclude @sentry but keep @sentry/react')}
+    ${pc.dim('@sentry/*')}
+    ${pc.dim('!@sentry/react')}
 
 ${pc.bold('Examples:')}
   ${pc.dim('# Default: build with visualizer → analyze → generate config')}
@@ -333,6 +346,14 @@ const runAnalysis = (
 const runDefault = (args: CliArgs): void => {
   const configOutput = args.configOutput ?? 'chunk-groups.config.ts';
   const statsOutput = args.statsOutput ?? 'dist/stats.json';
+  const configPath = resolve(process.cwd(), configOutput);
+
+  // 캐시 체크: lockfile이 변경되지 않았으면 빌드 + 분석 스킵
+  if (isCacheValid(configPath)) {
+    console.log(pc.green('✓ Dependencies unchanged, skipping build & analysis'));
+    console.log(pc.dim(`  (lockfile hash matches ${configOutput})`));
+    return;
+  }
 
   // Step 1: Build with visualizer to generate stats.json
   if (!args.quiet) {
@@ -374,9 +395,12 @@ const runDefault = (args: CliArgs): void => {
   const rawStats = readFileSync(statsPath, 'utf-8');
   const stats = parseStatsFile(rawStats);
 
+  // .chunkgroupignore 파일 로드 및 CLI --ignore 옵션과 병합
+  const ignorePatterns = loadIgnorePatterns(args.ignore);
+
   const options: AnalyzerOptions = {
     largePackageThreshold: args.threshold * 1024,
-    ignore: args.ignore,
+    ignore: ignorePatterns,
   };
 
   const { packages, suggestions } = runAnalysis(stats, options, args.quiet);
@@ -386,19 +410,20 @@ const runDefault = (args: CliArgs): void => {
     console.log(formatTextReport(result));
   }
 
-  // Step 3: Generate config file
+  // Step 3: Generate config file with cache key
   if (!args.quiet) {
     console.log(pc.bold(pc.cyan('[3/3] Generating config file...\n')));
   }
 
-  const configPath = resolve(process.cwd(), configOutput);
   const configDir = dirname(configPath);
 
   if (!existsSync(configDir)) {
     mkdirSync(configDir, { recursive: true });
   }
 
-  const configCode = generateConfigCode(suggestions);
+  // lockfile 해시를 캐시키로 저장
+  const cacheKey = calculateLockfileHash();
+  const configCode = generateConfigCode(suggestions, cacheKey ?? undefined);
   writeFileSync(configPath, configCode);
 
   console.log(pc.green(`✓ Config saved to: ${configPath}`));
@@ -460,9 +485,12 @@ const runAnalyze = (args: CliArgs): void => {
   const rawStats = readFileSync(statsPath, 'utf-8');
   const stats = parseStatsFile(rawStats);
 
+  // .chunkgroupignore 파일 로드 및 CLI --ignore 옵션과 병합
+  const ignorePatterns = loadIgnorePatterns(args.ignore);
+
   const options: AnalyzerOptions = {
     largePackageThreshold: args.threshold * 1024,
-    ignore: args.ignore,
+    ignore: ignorePatterns,
   };
 
   const { packages, suggestions } = runAnalysis(stats, options, false);
@@ -492,4 +520,21 @@ const formatOutput = (
     default:
       return formatTextReport(result);
   }
+};
+
+/**
+ * .chunkgroupignore 파일과 CLI --ignore 옵션을 병합합니다.
+ * 파일 패턴이 먼저 적용되고, CLI 패턴이 뒤에 추가됩니다.
+ */
+const loadIgnorePatterns = (cliIgnore: string[]): string[] => {
+  const ignoreFilePath = findIgnoreFile();
+
+  if (!ignoreFilePath) {
+    return cliIgnore;
+  }
+
+  const filePatterns = parseIgnoreFile(ignoreFilePath);
+
+  // 파일 패턴 + CLI 패턴 (CLI가 뒤에 와서 우선순위 높음)
+  return [...filePatterns, ...cliIgnore];
 };
