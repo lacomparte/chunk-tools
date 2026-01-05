@@ -1,6 +1,6 @@
 {
   "name": "chunk-analyzer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Analyze Vite/Rollup bundles and suggest optimal chunk groupings",
   "keywords": [
     "vite",
@@ -43,10 +43,12 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "picocolors": "^1.0.0"
+    "picocolors": "^1.0.0",
+    "picomatch": "^4.0.3"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
+    "@types/picomatch": "^4.0.2",
     "tsup": "^8.0.1",
     "typescript": "^5.4.0",
     "vitest": "^1.3.0"
