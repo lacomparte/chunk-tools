@@ -1,10 +1,11 @@
-import type { NodeMeta, VisualizerStatsV2 } from '../types/index.js';
+import type { VisualizerStatsV2 } from '../types/index.js';
 import { extractPackageName } from '../utils/extract-package.util.js';
 
 export type PackageNode = {
   name: string;
   totalSize: number;
   gzipSize: number;
+  brotliSize: number;
   imports: Set<string>; // 이 패키지가 import하는 패키지들
   importedBy: Set<string>; // 이 패키지를 import하는 패키지들
   modules: string[]; // 이 패키지에 속한 모듈 uid들
@@ -15,7 +16,9 @@ export type DependencyGraph = {
   edges: Map<string, Set<string>>; // package -> imported packages
 };
 
-export const buildDependencyGraph = (stats: VisualizerStatsV2): DependencyGraph => {
+export const buildDependencyGraph = (
+  stats: VisualizerStatsV2,
+): DependencyGraph => {
   const { nodeParts, nodeMetas } = stats;
   const packages = new Map<string, PackageNode>();
   const moduleToPackage = new Map<string, string>(); // uid -> packageName
@@ -29,7 +32,8 @@ export const buildDependencyGraph = (stats: VisualizerStatsV2): DependencyGraph 
 
     moduleToPackage.set(uid, packageName);
 
-    const existing = packages.get(packageName) ?? createEmptyPackageNode(packageName);
+    const existing =
+      packages.get(packageName) ?? createEmptyPackageNode(packageName);
     existing.modules.push(uid);
 
     // 사이즈 계산
@@ -38,6 +42,7 @@ export const buildDependencyGraph = (stats: VisualizerStatsV2): DependencyGraph 
       if (part && typeof part === 'object') {
         existing.totalSize += part.renderedLength;
         existing.gzipSize += part.gzipLength;
+        existing.brotliSize += part.brotliLength;
       }
     }
 
@@ -82,6 +87,7 @@ const createEmptyPackageNode = (name: string): PackageNode => ({
   name,
   totalSize: 0,
   gzipSize: 0,
+  brotliSize: 0,
   imports: new Set(),
   importedBy: new Set(),
   modules: [],
@@ -132,7 +138,11 @@ export const findConnectedClusters = (
       // 연결된 패키지들 탐색
       for (const neighbor of [...node.imports, ...node.importedBy]) {
         if (!visited.has(neighbor)) {
-          const strength = calculateConnectionStrength(graph, current, neighbor);
+          const strength = calculateConnectionStrength(
+            graph,
+            current,
+            neighbor,
+          );
           if (strength >= minConnectionStrength) {
             queue.push(neighbor);
           }
@@ -170,12 +180,12 @@ export const calculateCentrality = (
 // 앱 코드에서 직접 import하는 패키지 찾기 (진입점)
 export const findEntryPackages = (
   stats: VisualizerStatsV2,
-  graph: DependencyGraph,
+  _graph: DependencyGraph,
 ): Set<string> => {
   const entryPackages = new Set<string>();
   const { nodeMetas } = stats;
 
-  for (const [_uid, meta] of Object.entries(nodeMetas)) {
+  for (const meta of Object.values(nodeMetas)) {
     // 앱 코드 (node_modules가 아닌 모듈)
     if (meta.id.includes('node_modules')) continue;
 

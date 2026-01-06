@@ -1,9 +1,15 @@
-import type { ChunkGroup, PackageInfo, AnalyzerOptions } from '../types/index.js';
-import type { DependencyGraph, PackageNode } from './dependency-graph.js';
-import { calculateCentrality } from './dependency-graph.js';
-import { formatSize } from '../utils/format-size.util.js';
-import { KNOWN_GROUPS } from '../constants/known-groups.constant.js';
 import { DEFAULT_OPTIONS } from '../constants/defaults.constant.js';
+import { KNOWN_GROUPS } from '../constants/known-groups.constant.js';
+import type {
+  ChunkGroup,
+  PackageInfo,
+  AnalyzerOptions,
+} from '../types/index.js';
+import { formatSize } from '../utils/format-size.util.js';
+import { filterIgnoredPackages } from '../utils/ignore-file.util.js';
+
+import type { DependencyGraph } from './dependency-graph.js';
+import { calculateCentrality } from './dependency-graph.js';
 
 type ClusterCandidate = {
   packages: Set<string>;
@@ -23,9 +29,12 @@ export const analyzeWithDependencyGraph = (
   const assigned = new Set<string>();
   const suggestions: ChunkGroup[] = [];
 
-  // 패키지 맵 생성
+  // ignore 패턴으로 필터링
+  const filteredPackages = filterIgnoredPackages(packages, opts.ignore);
+
+  // 패키지 맵 생성 (필터링된 패키지만)
   const packageMap = new Map<string, PackageInfo>();
-  for (const pkg of packages) {
+  for (const pkg of filteredPackages) {
     packageMap.set(pkg.name, pkg);
   }
 
@@ -71,11 +80,17 @@ const processKnownCoreGroups = (
       return sum + (pkg?.gzipSize ?? 0);
     }, 0);
 
+    const brotliSize = matched.reduce((sum, name) => {
+      const pkg = packageMap.get(name);
+      return sum + (pkg?.brotliSize ?? 0);
+    }, 0);
+
     suggestions.push({
       name: `vendor/${groupKey}`,
       patterns: matched,
       estimatedSize: totalSize,
       gzipSize,
+      brotliSize,
       reason: `${groupDef.description} (${formatSize(totalSize)})`,
     });
 
@@ -104,7 +119,7 @@ const findMatchedPackages = (
 // 대형 패키지 개별 분리 (의존성이 적고 크기가 큰 패키지)
 const processLargeIsolatedPackages = (
   graph: DependencyGraph,
-  packageMap: Map<string, PackageInfo>,
+  _packageMap: Map<string, PackageInfo>,
   opts: Required<AnalyzerOptions>,
   assigned: Set<string>,
   suggestions: ChunkGroup[],
@@ -132,6 +147,7 @@ const processLargeIsolatedPackages = (
         patterns: [pkgName],
         estimatedSize: node.totalSize,
         gzipSize: node.gzipSize,
+        brotliSize: node.brotliSize,
         reason: `큰 패키지 (${formatSize(node.totalSize)})`,
       });
       assigned.add(pkgName);
@@ -142,13 +158,14 @@ const processLargeIsolatedPackages = (
 // 의존성 클러스터 분석 - 실제로 함께 사용되는 패키지 묶기
 const processDependencyClusters = (
   graph: DependencyGraph,
-  packageMap: Map<string, PackageInfo>,
-  opts: Required<AnalyzerOptions>,
+  _packageMap: Map<string, PackageInfo>,
+  _opts: Required<AnalyzerOptions>,
   assigned: Set<string>,
   suggestions: ChunkGroup[],
 ): void => {
-  const unassigned = Array.from(graph.packages.entries())
-    .filter(([name]) => !assigned.has(name));
+  const unassigned = Array.from(graph.packages.entries()).filter(
+    ([name]) => !assigned.has(name),
+  );
 
   if (unassigned.length === 0) return;
 
@@ -169,6 +186,11 @@ const processDependencyClusters = (
       return sum + (node?.gzipSize ?? 0);
     }, 0);
 
+    const brotliSize = clusterPackages.reduce((sum, name) => {
+      const node = graph.packages.get(name);
+      return sum + (node?.brotliSize ?? 0);
+    }, 0);
+
     // 클러스터 이름 결정 (가장 중심이 되는 패키지 기반)
     const centralPkg = findCentralPackage(graph, clusterPackages);
     const clusterName = categorizeCluster(clusterPackages, centralPkg);
@@ -178,6 +200,7 @@ const processDependencyClusters = (
       patterns: clusterPackages,
       estimatedSize: totalSize,
       gzipSize,
+      brotliSize,
       reason: cluster.reason,
     });
 
@@ -297,7 +320,10 @@ const categorizePackage = (pkgName: string): string | null => {
   return null;
 };
 
-const getCategoryDescription = (category: string, totalSize: number): string => {
+const getCategoryDescription = (
+  category: string,
+  totalSize: number,
+): string => {
   const descriptions: Record<string, string> = {
     'state-routing': '상태 관리 + 라우팅',
     'form': '폼 관리',
@@ -330,7 +356,7 @@ const findCentralPackage = (
 };
 
 // 클러스터 이름 결정
-const categorizeCluster = (packages: string[], centralPkg: string): string => {
+const categorizeCluster = (_packages: string[], centralPkg: string): string => {
   // 먼저 카테고리로 시도
   const category = categorizePackage(centralPkg);
   if (category) return category;
@@ -345,7 +371,9 @@ const processRemainingPackages = (
   assigned: Set<string>,
   suggestions: ChunkGroup[],
 ): void => {
-  const remaining = [...packageMap.keys()].filter((name) => !assigned.has(name));
+  const remaining = [...packageMap.keys()].filter(
+    (name) => !assigned.has(name),
+  );
   if (remaining.length === 0) return;
 
   const totalSize = remaining.reduce((sum, name) => {
@@ -358,11 +386,17 @@ const processRemainingPackages = (
     return sum + (pkg?.gzipSize ?? 0);
   }, 0);
 
+  const brotliSize = remaining.reduce((sum, name) => {
+    const pkg = packageMap.get(name);
+    return sum + (pkg?.brotliSize ?? 0);
+  }, 0);
+
   suggestions.push({
     name: 'vendor/misc',
     patterns: remaining,
     estimatedSize: totalSize,
     gzipSize,
+    brotliSize,
     reason: `기타 패키지 ${remaining.length}개 (${formatSize(totalSize)})`,
   });
 };
