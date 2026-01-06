@@ -2,6 +2,7 @@ import pc from 'picocolors';
 
 import type {
   AnalysisResult,
+  BudgetReport,
   ChunkGroup,
   PackageInfo,
 } from '../types/index.js';
@@ -150,14 +151,22 @@ const formatTop15Packages = (
     const size = formatSize(pkg.totalSize).padStart(10);
     const barLen = Math.ceil((pkg.totalSize / totalSize) * 30);
     const bar = pc.green('█'.repeat(barLen));
-    const compressionInfo = formatPackageCompression(pkg.gzipSize, pkg.brotliSize);
+    const compressionInfo = formatPackageCompression(
+      pkg.gzipSize,
+      pkg.brotliSize,
+    );
 
-    lines.push(`  ${pc.dim(rank)}. ${name} ${pc.yellow(size)} ${compressionInfo} ${bar}`);
+    lines.push(
+      `  ${pc.dim(rank)}. ${name} ${pc.yellow(size)} ${compressionInfo} ${bar}`,
+    );
   });
   lines.push('');
 };
 
-const formatPackageCompression = (gzipSize: number, brotliSize: number): string => {
+const formatPackageCompression = (
+  gzipSize: number,
+  brotliSize: number,
+): string => {
   const hasGzip = gzipSize > 0;
   const hasBrotli = brotliSize > 0;
 
@@ -173,10 +182,7 @@ const formatPackageCompression = (gzipSize: number, brotliSize: number): string 
   return '';
 };
 
-const formatSuggestedGroups = (
-  lines: string[],
-  groups: ChunkGroup[],
-): void => {
+const formatSuggestedGroups = (lines: string[], groups: ChunkGroup[]): void => {
   lines.push(pc.bold('Suggested CHUNK_GROUPS'));
   lines.push(pc.dim('─'.repeat(60)));
   lines.push('');
@@ -185,7 +191,11 @@ const formatSuggestedGroups = (
 
   for (const group of groups) {
     const reasonWithoutSize = stripSizeFromReason(group.reason);
-    const sizeInfo = formatSizeWithCompression(group.estimatedSize, group.gzipSize, group.brotliSize);
+    const sizeInfo = formatSizeWithCompression(
+      group.estimatedSize,
+      group.gzipSize,
+      group.brotliSize,
+    );
     lines.push(`  ${pc.dim(`// ${reasonWithoutSize} (${sizeInfo})`)}`);
     lines.push(`  {`);
     lines.push(`    name: ${pc.green(`'${group.name}'`)},`);
@@ -217,9 +227,15 @@ const formatManualChunksHelper = (lines: string[]): void => {
 const formatNotes = (lines: string[]): void => {
   lines.push(pc.bold(pc.yellow('Notes')));
   lines.push(pc.dim('─'.repeat(60)));
-  lines.push('  • splitVendorChunkPlugin()과 manualChunks를 동시 사용하지 마세요.');
-  lines.push('  • react-core 그룹은 의존성 순서 문제 방지를 위해 함께 묶으세요.');
-  lines.push('  • 이 설정은 자동 생성된 추천입니다. 프로젝트에 맞게 조정하세요.');
+  lines.push(
+    '  • splitVendorChunkPlugin()과 manualChunks를 동시 사용하지 마세요.',
+  );
+  lines.push(
+    '  • react-core 그룹은 의존성 순서 문제 방지를 위해 함께 묶으세요.',
+  );
+  lines.push(
+    '  • 이 설정은 자동 생성된 추천입니다. 프로젝트에 맞게 조정하세요.',
+  );
   lines.push('');
 };
 
@@ -263,7 +279,11 @@ export const generateConfigCode = (
 
   for (const group of suggestions) {
     const reasonWithoutSize = stripSizeFromReason(group.reason);
-    const sizeInfo = formatConfigSizeComment(group.estimatedSize, group.gzipSize, group.brotliSize);
+    const sizeInfo = formatConfigSizeComment(
+      group.estimatedSize,
+      group.gzipSize,
+      group.brotliSize,
+    );
     lines.push(`  // ${reasonWithoutSize} ${sizeInfo}`);
     lines.push(`  {`);
     lines.push(`    name: '${group.name}',`);
@@ -286,4 +306,50 @@ const formatPatternsPlain = (lines: string[], patterns: string[]): void => {
     patterns.forEach((p) => lines.push(`      '${p}',`));
     lines.push(`    ],`);
   }
+};
+
+/**
+ * Budget 검증 결과를 포맷팅합니다.
+ */
+export const formatBudgetReport = (report: BudgetReport): string => {
+  const lines: string[] = [];
+
+  lines.push('');
+  lines.push(pc.bold('Budget Status:'));
+  lines.push(pc.dim('─'.repeat(50)));
+
+  for (const v of report.violations) {
+    const icon =
+      v.severity === 'ok'
+        ? pc.green('✓')
+        : v.severity === 'warning'
+          ? pc.yellow('⚠')
+          : pc.red('✗');
+
+    const label = v.target ? `${v.type} (${v.target})` : v.type;
+    const actualStr = formatSize(v.actual);
+    const budgetStr = formatSize(v.budget);
+    const percentStr = `${(v.percentage * 100).toFixed(0)}%`;
+
+    const colorFn =
+      v.severity === 'ok'
+        ? pc.green
+        : v.severity === 'warning'
+          ? pc.yellow
+          : pc.red;
+
+    lines.push(
+      `  ${icon} ${label.padEnd(20)} ${actualStr.padStart(10)} / ${budgetStr.padStart(10)} (${colorFn(percentStr)})`,
+    );
+  }
+
+  lines.push('');
+  lines.push(
+    report.passed
+      ? pc.green('✓ All budgets passed')
+      : pc.red('✗ Budget exceeded!'),
+  );
+  lines.push('');
+
+  return lines.join('\n');
 };

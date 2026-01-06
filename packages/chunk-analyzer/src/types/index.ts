@@ -5,6 +5,9 @@ export type {
   AnalyzerOptions,
   AnalysisSummary,
   AnalysisResult,
+  BudgetOptions,
+  BudgetViolation,
+  BudgetReport,
 } from './analyzer.type.js';
 
 export type {

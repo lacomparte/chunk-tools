@@ -5,17 +5,27 @@ import { resolve, dirname } from 'node:path';
 import pc from 'picocolors';
 
 import { analyzePackages } from '../../core/analyzer.js';
+import { checkBudgets, hasBudgetOptions } from '../../core/budget-checker.js';
 import { analyzeWithDependencyGraph } from '../../core/cluster-analyzer.js';
 import { buildDependencyGraph } from '../../core/dependency-graph.js';
 import { parseStats, parseStatsFile } from '../../core/parser.js';
 import {
   createAnalysisResult,
+  formatBudgetReport,
   formatTextReport,
   generateConfigCode,
 } from '../../core/reporter.js';
-import type { AnalyzerOptions, VisualizerStats, VisualizerStatsV2 } from '../../types/index.js';
+import type {
+  AnalyzerOptions,
+  BudgetOptions,
+  VisualizerStats,
+  VisualizerStatsV2,
+} from '../../types/index.js';
 import { calculateLockfileHash, isCacheValid } from '../../utils/cache.util.js';
-import { findIgnoreFile, parseIgnoreFile } from '../../utils/ignore-file.util.js';
+import {
+  findIgnoreFile,
+  parseIgnoreFile,
+} from '../../utils/ignore-file.util.js';
 
 type CliArgs = {
   command: 'default' | 'analyze' | 'init' | 'help' | 'version';
@@ -28,6 +38,12 @@ type CliArgs = {
   configOutput?: string;
   statsOutput?: string;
   quiet: boolean;
+  // Budget options
+  budgetTotal?: number;
+  budgetGzip?: number;
+  budgetBrotli?: number;
+  budgetChunk?: number;
+  failOnBudget: boolean;
 };
 
 export const runCli = (): void => {
@@ -70,6 +86,7 @@ const parseArgs = (args: string[]): CliArgs => {
     threshold: 100,
     ignore: [],
     quiet: false,
+    failOnBudget: false,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -139,6 +156,22 @@ const parseArg = (
     case '--quiet':
       result.quiet = true;
       return false;
+    // Budget options
+    case '--budget-total':
+      result.budgetTotal = parseInt(args[i + 1], 10);
+      return true;
+    case '--budget-gzip':
+      result.budgetGzip = parseInt(args[i + 1], 10);
+      return true;
+    case '--budget-brotli':
+      result.budgetBrotli = parseInt(args[i + 1], 10);
+      return true;
+    case '--budget-chunk':
+      result.budgetChunk = parseInt(args[i + 1], 10);
+      return true;
+    case '--fail-on-budget':
+      result.failOnBudget = true;
+      return false;
     default:
       if (!arg.startsWith('-') && !result.input) {
         result.input = arg;
@@ -171,6 +204,13 @@ ${pc.bold('Options:')}
   -t, --threshold <kb>    Large package threshold in KB (default: 100)
   -q, --quiet             Suppress analysis output, only generate config
   --ignore <pattern>      Ignore packages matching pattern (repeatable)
+
+${pc.bold('Budget Options:')}
+  --budget-total <kb>     Total bundle size limit in KB
+  --budget-gzip <kb>      Gzip size limit in KB
+  --budget-brotli <kb>    Brotli size limit in KB
+  --budget-chunk <kb>     Single chunk size limit in KB
+  --fail-on-budget        Exit with code 1 if budget exceeded (for CI)
 
 ${pc.bold('.chunkgroupignore file:')}
   Create a .chunkgroupignore file to exclude packages from grouping.
@@ -230,7 +270,9 @@ const runInit = (args: CliArgs): void => {
 
   if (existsSync(configPath)) {
     console.log(pc.yellow(`Config file already exists: ${configPath}`));
-    console.log(pc.dim('Use "npx chunk-analyzer" to regenerate based on analysis.'));
+    console.log(
+      pc.dim('Use "npx chunk-analyzer" to regenerate based on analysis.'),
+    );
     return;
   }
 
@@ -246,10 +288,16 @@ const runInit = (args: CliArgs): void => {
   console.log();
   console.log(pc.bold('Next steps:'));
   console.log(pc.dim('  1. Add visualizer to vite.config.ts:'));
-  console.log(pc.dim('     visualizer({ json: true, filename: "dist/stats.json" })'));
+  console.log(
+    pc.dim('     visualizer({ json: true, filename: "dist/stats.json" })'),
+  );
   console.log();
   console.log(pc.dim('  2. Import in vite.config.ts:'));
-  console.log(pc.dim(`     import { CHUNK_GROUPS, createManualChunks } from "./${configOutput.replace(/\.ts$/, '')}"`));
+  console.log(
+    pc.dim(
+      `     import { CHUNK_GROUPS, createManualChunks } from "./${configOutput.replace(/\.ts$/, '')}"`,
+    ),
+  );
   console.log();
   console.log(pc.dim('  3. Use in rollupOptions.output:'));
   console.log(pc.dim('     manualChunks: createManualChunks(CHUNK_GROUPS)'));
@@ -328,7 +376,9 @@ const runAnalysis = (
   // v2 stats면 의존성 그래프 기반 분석 사용
   if (isV2Stats(stats)) {
     if (!quiet) {
-      console.log(pc.dim('Using dependency graph analysis (v2 stats detected)\n'));
+      console.log(
+        pc.dim('Using dependency graph analysis (v2 stats detected)\n'),
+      );
     }
     const graph = buildDependencyGraph(stats);
     const suggestions = analyzeWithDependencyGraph(packages, graph, options);
@@ -350,7 +400,9 @@ const runDefault = (args: CliArgs): void => {
 
   // 캐시 체크: lockfile이 변경되지 않았으면 빌드 + 분석 스킵
   if (isCacheValid(configPath)) {
-    console.log(pc.green('✓ Dependencies unchanged, skipping build & analysis'));
+    console.log(
+      pc.green('✓ Dependencies unchanged, skipping build & analysis'),
+    );
     console.log(pc.dim(`  (lockfile hash matches ${configOutput})`));
     return;
   }
@@ -360,7 +412,10 @@ const runDefault = (args: CliArgs): void => {
     console.log(pc.bold(pc.cyan('\n[1/3] Building with visualizer...\n')));
   }
 
-  const buildCommand = createVisualizerBuildCommand(args.buildCommand, statsOutput);
+  const buildCommand = createVisualizerBuildCommand(
+    args.buildCommand,
+    statsOutput,
+  );
 
   try {
     execSync(buildCommand, {
@@ -410,6 +465,9 @@ const runDefault = (args: CliArgs): void => {
     console.log(formatTextReport(result));
   }
 
+  // Budget 검증
+  const budgetFailed = runBudgetCheck(args, result);
+
   // Step 3: Generate config file with cache key
   if (!args.quiet) {
     console.log(pc.bold(pc.cyan('[3/3] Generating config file...\n')));
@@ -429,7 +487,16 @@ const runDefault = (args: CliArgs): void => {
   console.log(pc.green(`✓ Config saved to: ${configPath}`));
 
   if (!args.quiet) {
-    console.log(pc.dim(`\nNext: Run your actual build command to use the generated config.`));
+    console.log(
+      pc.dim(
+        `\nNext: Run your actual build command to use the generated config.`,
+      ),
+    );
+  }
+
+  // Budget 초과 시 exit code 1
+  if (budgetFailed && args.failOnBudget) {
+    process.exit(1);
   }
 };
 
@@ -445,7 +512,8 @@ const createVisualizerBuildCommand = (
   const outputPath = statsOutput ?? 'dist/stats.json';
 
   // Check if vite.config exists and may have visualizer configured
-  const hasViteConfig = existsSync(resolve(process.cwd(), 'vite.config.ts')) ||
+  const hasViteConfig =
+    existsSync(resolve(process.cwd(), 'vite.config.ts')) ||
     existsSync(resolve(process.cwd(), 'vite.config.js'));
 
   if (hasViteConfig) {
@@ -457,12 +525,12 @@ const createVisualizerBuildCommand = (
   // No vite config, this is likely an error
   throw new Error(
     'No vite.config.ts found. Please create a vite.config.ts with visualizer plugin:\n\n' +
-    `import { visualizer } from 'rollup-plugin-visualizer';\n\n` +
-    `export default defineConfig({\n` +
-    `  plugins: [\n` +
-    `    visualizer({ json: true, filename: '${outputPath}' })\n` +
-    `  ]\n` +
-    `});\n`,
+      `import { visualizer } from 'rollup-plugin-visualizer';\n\n` +
+      `export default defineConfig({\n` +
+      `  plugins: [\n` +
+      `    visualizer({ json: true, filename: '${outputPath}' })\n` +
+      `  ]\n` +
+      `});\n`,
   );
 };
 
@@ -472,7 +540,12 @@ const runAnalyze = (args: CliArgs): void => {
   if (!statsPath) {
     const candidates = args.input
       ? [args.input]
-      : ['dist/stats.json', 'dist/report.json', 'stats.json', 'build/stats.json'];
+      : [
+          'dist/stats.json',
+          'dist/report.json',
+          'stats.json',
+          'build/stats.json',
+        ];
 
     throw new Error(
       `Stats file not found. Tried: ${candidates.join(', ')}\n` +
@@ -503,6 +576,14 @@ const runAnalyze = (args: CliArgs): void => {
     console.log(pc.green(`Output saved to: ${args.output}`));
   } else {
     console.log(output);
+  }
+
+  // Budget 검증
+  const budgetFailed = runBudgetCheck(args, result);
+
+  // Budget 초과 시 exit code 1
+  if (budgetFailed && args.failOnBudget) {
+    process.exit(1);
   }
 };
 
@@ -537,4 +618,29 @@ const loadIgnorePatterns = (cliIgnore: string[]): string[] => {
 
   // 파일 패턴 + CLI 패턴 (CLI가 뒤에 와서 우선순위 높음)
   return [...filePatterns, ...cliIgnore];
+};
+
+/**
+ * Budget 검증을 실행하고 결과를 출력합니다.
+ * @returns budget이 초과되었으면 true, 아니면 false
+ */
+const runBudgetCheck = (
+  args: CliArgs,
+  result: ReturnType<typeof createAnalysisResult>,
+): boolean => {
+  if (!hasBudgetOptions(args)) {
+    return false;
+  }
+
+  const budgetOptions: BudgetOptions = {
+    totalSize: args.budgetTotal,
+    gzipSize: args.budgetGzip,
+    brotliSize: args.budgetBrotli,
+    chunkSize: args.budgetChunk,
+  };
+
+  const budgetReport = checkBudgets(result, budgetOptions);
+  console.log(formatBudgetReport(budgetReport));
+
+  return !budgetReport.passed;
 };
