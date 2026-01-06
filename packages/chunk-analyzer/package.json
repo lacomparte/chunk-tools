@@ -1,6 +1,6 @@
 {
   "name": "chunk-analyzer",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Analyze Vite/Rollup bundles and suggest optimal chunk groupings",
   "keywords": [
     "vite",

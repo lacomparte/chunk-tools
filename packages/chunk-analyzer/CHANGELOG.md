@@ -1,5 +1,25 @@
 # chunk-analyzer
 
+## 0.4.0
+
+### Minor Changes
+
+- feat: add bundle size budget feature
+  - Add CLI options for bundle size limits: `--budget-total`, `--budget-gzip`, `--budget-brotli`, `--budget-chunk`
+  - Add `--fail-on-budget` flag for CI integration (exit code 1 when budget exceeded)
+  - Add visual budget status report with three severity levels: ✓ ok, ⚠ warning, ✗ error
+  - Warning threshold at 90% by default
+
+  Example usage:
+
+  ```bash
+  # Set gzip budget to 300KB
+  chunk-analyzer --budget-gzip 300
+
+  # Fail CI when budget exceeded
+  chunk-analyzer --budget-gzip 300 --fail-on-budget
+  ```
+
 ## 0.3.0
 
 ### Minor Changes
