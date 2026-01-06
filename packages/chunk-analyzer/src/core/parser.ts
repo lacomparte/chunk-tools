@@ -32,7 +32,7 @@ const parseV2Stats = (
 ): void => {
   const { nodeParts, nodeMetas } = stats;
 
-  for (const [_uid, meta] of Object.entries(nodeMetas)) {
+  for (const meta of Object.values(nodeMetas)) {
     if (!meta.id.includes('node_modules')) continue;
 
     const packageName = extractPackageName(meta.id);
@@ -82,6 +82,7 @@ const addToPackageMap = (
 
   existing.totalSize += sizes.totalSize;
   existing.gzipSize += sizes.gzipSize;
+  existing.brotliSize += sizes.brotliSize;
   existing.modules.push({
     name: moduleId.split('/').pop() ?? moduleId,
     size: sizes.totalSize,
@@ -123,6 +124,7 @@ const processNodeModule = (
 
   existing.totalSize += node.value ?? 0;
   existing.gzipSize += node.gzipSize ?? 0;
+  existing.brotliSize += node.brotliSize ?? 0;
   existing.modules.push(createModuleInfo(node, fullPath));
 
   packageMap.set(packageName, existing);
@@ -132,6 +134,7 @@ const createEmptyPackageInfo = (name: string): PackageInfo => ({
   name,
   totalSize: 0,
   gzipSize: 0,
+  brotliSize: 0,
   modules: [],
 });
 

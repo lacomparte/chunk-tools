@@ -6,6 +6,7 @@ import type {
   PackageInfo,
 } from '../types/index.js';
 import { formatSize } from '../utils/format-size.util.js';
+import { filterIgnoredPackages } from '../utils/ignore-file.util.js';
 
 export const analyzePackages = (
   packages: PackageInfo[],
@@ -24,14 +25,6 @@ export const analyzePackages = (
 
   return suggestions.sort((a, b) => b.estimatedSize - a.estimatedSize);
 };
-
-const filterIgnoredPackages = (
-  packages: PackageInfo[],
-  ignore: string[],
-): PackageInfo[] =>
-  packages.filter(
-    (pkg) => !ignore.some((pattern) => pkg.name.includes(pattern)),
-  );
 
 const mergeGroups = (
   customGroups: Record<string, string[]>,
@@ -64,8 +57,7 @@ const findMatchedPackages = (
 ): PackageInfo[] =>
   packages.filter((pkg) =>
     patterns.some(
-      (pattern) =>
-        pkg.name === pattern || pkg.name.startsWith(`${pattern}/`),
+      (pattern) => pkg.name === pattern || pkg.name.startsWith(`${pattern}/`),
     ),
   );
 
@@ -78,6 +70,7 @@ const createChunkGroup = (
   patterns: packages.map((pkg) => pkg.name),
   estimatedSize: packages.reduce((sum, pkg) => sum + pkg.totalSize, 0),
   gzipSize: packages.reduce((sum, pkg) => sum + pkg.gzipSize, 0),
+  brotliSize: packages.reduce((sum, pkg) => sum + pkg.brotliSize, 0),
   reason,
 });
 
@@ -99,6 +92,7 @@ const processLargePackages = (
       patterns: [pkg.name],
       estimatedSize: pkg.totalSize,
       gzipSize: pkg.gzipSize,
+      brotliSize: pkg.brotliSize,
       reason: `큰 패키지 (${formatSize(pkg.totalSize)})`,
     });
     assigned.add(pkg.name);
@@ -118,6 +112,7 @@ const processRemainingPackages = (
     patterns: remaining.map((p) => p.name),
     estimatedSize: remaining.reduce((sum, pkg) => sum + pkg.totalSize, 0),
     gzipSize: remaining.reduce((sum, pkg) => sum + pkg.gzipSize, 0),
+    brotliSize: remaining.reduce((sum, pkg) => sum + pkg.brotliSize, 0),
     reason: `기타 패키지 ${remaining.length}개`,
   });
 };

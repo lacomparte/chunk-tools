@@ -10,6 +10,7 @@ export type PackageInfo = {
   name: string;
   totalSize: number;
   gzipSize: number;
+  brotliSize: number;
   modules: ModuleInfo[];
 };
 
@@ -18,6 +19,7 @@ export type ChunkGroup = {
   patterns: string[];
   estimatedSize: number;
   gzipSize: number;
+  brotliSize: number;
   reason: string;
 };
 
@@ -31,6 +33,7 @@ export type AnalyzerOptions = {
 export type AnalysisSummary = {
   totalSize: number;
   totalGzipSize: number;
+  totalBrotliSize: number;
   packageCount: number;
   groupCount: number;
 };
