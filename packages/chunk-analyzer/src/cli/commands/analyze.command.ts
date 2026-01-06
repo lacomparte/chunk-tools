@@ -22,6 +22,9 @@ import type {
   VisualizerStatsV2,
 } from '../../types/index.js';
 import { calculateLockfileHash, isCacheValid } from '../../utils/cache.util.js';
+import { parseExistingConfig } from '../../utils/config-parser.util.js';
+import { calculateDiff, formatDiff } from '../../utils/diff-formatter.util.js';
+import { formatSize } from '../../utils/format-size.util.js';
 import {
   findIgnoreFile,
   parseIgnoreFile,
@@ -44,6 +47,8 @@ type CliArgs = {
   budgetBrotli?: number;
   budgetChunk?: number;
   failOnBudget: boolean;
+  // Dry-run option
+  dryRun: boolean;
 };
 
 export const runCli = (): void => {
@@ -87,6 +92,7 @@ const parseArgs = (args: string[]): CliArgs => {
     ignore: [],
     quiet: false,
     failOnBudget: false,
+    dryRun: false,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -172,6 +178,10 @@ const parseArg = (
     case '--fail-on-budget':
       result.failOnBudget = true;
       return false;
+    // Dry-run option
+    case '--dry-run':
+      result.dryRun = true;
+      return false;
     default:
       if (!arg.startsWith('-') && !result.input) {
         result.input = arg;
@@ -211,6 +221,10 @@ ${pc.bold('Budget Options:')}
   --budget-brotli <kb>    Brotli size limit in KB
   --budget-chunk <kb>     Single chunk size limit in KB
   --fail-on-budget        Exit with code 1 if budget exceeded (for CI)
+
+${pc.bold('Preview Options:')}
+  --dry-run               Preview changes without modifying config file
+                          Shows diff between current config and new analysis
 
 ${pc.bold('.chunkgroupignore file:')}
   Create a .chunkgroupignore file to exclude packages from grouping.
@@ -468,6 +482,12 @@ const runDefault = (args: CliArgs): void => {
   // Budget 검증
   const budgetFailed = runBudgetCheck(args, result);
 
+  // Dry-run 모드: config 파일 저장하지 않고 diff만 출력
+  if (args.dryRun) {
+    runDryRunDiff(configPath, suggestions);
+    return;
+  }
+
   // Step 3: Generate config file with cache key
   if (!args.quiet) {
     console.log(pc.bold(pc.cyan('[3/3] Generating config file...\n')));
@@ -569,6 +589,19 @@ const runAnalyze = (args: CliArgs): void => {
   const { packages, suggestions } = runAnalysis(stats, options, false);
   const result = createAnalysisResult(packages, suggestions);
 
+  // Dry-run 모드: analyze 명령에서도 지원
+  if (args.dryRun) {
+    const configPath = resolve(
+      process.cwd(),
+      args.configOutput ?? 'chunk-groups.config.ts',
+    );
+    runDryRunDiff(configPath, suggestions);
+
+    // Budget 검증도 함께 실행
+    runBudgetCheck(args, result);
+    return;
+  }
+
   const output = formatOutput(result, suggestions, args.format);
 
   if (args.output) {
@@ -643,4 +676,33 @@ const runBudgetCheck = (
   console.log(formatBudgetReport(budgetReport));
 
   return !budgetReport.passed;
+};
+
+/**
+ * Dry-run 모드: 기존 config와 새 분석 결과를 비교하여 diff를 출력합니다.
+ */
+const runDryRunDiff = (
+  configPath: string,
+  suggestions: ReturnType<typeof analyzePackages>,
+): void => {
+  const existingGroups = parseExistingConfig(configPath);
+
+  if (!existingGroups) {
+    console.log(pc.yellow('\nNo existing config file found.'));
+    console.log(
+      pc.dim(`Would create: ${configPath} with ${suggestions.length} groups\n`),
+    );
+
+    // 새로 생성될 그룹 목록 출력
+    for (const group of suggestions) {
+      const sizeInfo =
+        group.estimatedSize > 0 ? ` (${formatSize(group.estimatedSize)})` : '';
+      console.log(pc.green(`  + ${group.name}${sizeInfo}`));
+    }
+    console.log('');
+    return;
+  }
+
+  const diff = calculateDiff(existingGroups, suggestions);
+  console.log(formatDiff(diff));
 };

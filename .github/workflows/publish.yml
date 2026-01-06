@@ -81,8 +81,24 @@ jobs:
       - name: Setup npmrc
         run: echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_PUBLISH_TOKEN }}" > ~/.npmrc
 
+      - name: Check for changesets
+        id: check-changesets
+        run: |
+          if ls .changeset/*.md 1> /dev/null 2>&1; then
+            # Exclude README.md from changeset files
+            CHANGESET_COUNT=$(ls .changeset/*.md 2>/dev/null | grep -v README.md | wc -l || echo 0)
+            if [ "$CHANGESET_COUNT" -gt 0 ]; then
+              echo "has_changesets=true" >> $GITHUB_OUTPUT
+            else
+              echo "has_changesets=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "has_changesets=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Create Release Pull Request or Publish
         id: changesets
+        if: steps.check-changesets.outputs.has_changesets == 'true'
         uses: changesets/action@v1
         with:
           publish: pnpm release
@@ -90,3 +106,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
+
+      - name: Skip publish (no changesets)
+        if: steps.check-changesets.outputs.has_changesets == 'false'
+        run: echo "No changesets found, skipping publish step"
