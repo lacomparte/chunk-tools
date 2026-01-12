@@ -8,6 +8,8 @@ export type {
   BudgetOptions,
   BudgetViolation,
   BudgetReport,
+  PreservedChunk,
+  ChunksConfig,
 } from './analyzer.type.js';
 
 export type {

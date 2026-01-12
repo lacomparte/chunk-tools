@@ -10,7 +10,9 @@ Analyze Vite/Rollup bundles and suggest optimal chunk groupings.
 
 ## 기능
 
-- 의존성 그래프 기반 번들 분석
+- **의존성 그래프 기반** 번들 분석
+- **프레임워크 자동 감지** (React, Vue, Svelte, Angular)
+- **그래프 기반 자동 클러스터링** - co-import 패턴 분석
 - 최적의 `manualChunks` 설정 자동 생성
 - CLI 도구 지원
 - TypeScript 설정 파일 생성
@@ -50,7 +52,7 @@ export default defineConfig({
     visualizer({
       filename: 'dist/report.html',
       template: 'treemap',
-      open: true,  // false로 변경하면 브라우저 안 열림
+      open: true, // false로 변경하면 브라우저 안 열림
       gzipSize: true,
       brotliSize: true,
     }),
@@ -66,6 +68,7 @@ export default defineConfig({
 ```
 
 > ⚠️ **중요**: visualizer를 2개 설정해야 합니다.
+>
 > - `template: 'raw-data'` + `open: false` → chunk-analyzer가 읽는 JSON
 > - `template: 'treemap'` + `open: true` → 브라우저에서 시각화
 
@@ -95,6 +98,7 @@ chunk-analyzer가 내부에서 빌드를 실행합니다.
 ```
 
 이 방식의 장점:
+
 1. **chunk-analyzer 빌드**: 분석용 빌드 실행 → config 갱신 (브라우저 열지 않음)
 2. **프로덕션 빌드**: 갱신된 config로 최종 빌드 실행 (vite.config.ts의 `open` 설정 따름)
 
@@ -135,6 +139,8 @@ chunk-analyzer -t 50
 
 ## CLI 옵션
 
+### 기본 옵션
+
 | 옵션                   | 설명                          | 기본값                   |
 | ---------------------- | ----------------------------- | ------------------------ |
 | `-c, --config <file>`  | config 출력 경로              | `chunk-groups.config.ts` |
@@ -144,6 +150,52 @@ chunk-analyzer -t 50
 | `-q, --quiet`          | 분석 결과 출력 생략           | `false`                  |
 | `-f, --format <type>`  | 출력 형식: text, json, config | `text`                   |
 | `--ignore <pattern>`   | 무시할 패키지 (반복 가능)     | -                        |
+
+### TCP Slow Start 최적화 옵션 ✨ **NEW**
+
+| 옵션                             | 설명                                   | 기본값 |
+| -------------------------------- | -------------------------------------- | ------ |
+| `--preserved-chunks <json-file>` | 초기 HTML 청크 설정 JSON 파일 경로     | -      |
+| `--entry-chunks <names>`         | 진입점 청크 이름 (쉼표 구분)           | -      |
+| `--initial-chunk-max-size <kb>`  | 초기 청크 최대 크기 (KB, gzipped 기준) | `14`   |
+
+### 사용 예시
+
+**chunks-config.json 파일 예시**:
+
+```json
+{
+  "preservedChunks": [
+    {
+      "name": "vendor",
+      "patterns": ["react", "react-dom"],
+      "maxSize": 14336,
+      "splitStrategy": "auto",
+      "reason": "Initial HTML vendors (TCP IW10 optimized)"
+    }
+  ],
+  "entryChunks": ["search", "main"],
+  "initialChunkMaxSize": 14336,
+  "customGroups": {
+    "vendor/charts": ["chart.js", "chartjs-*", "react-chartjs-*"],
+    "vendor/maps": ["leaflet", "react-leaflet"],
+    "vendor/date": ["date-fns", "dayjs", "moment"]
+  }
+}
+```
+
+**CLI 실행**:
+
+```bash
+# JSON 파일로 설정
+chunk-analyzer --preserved-chunks chunks-config.json
+
+# CLI 옵션으로 override
+chunk-analyzer \
+  --preserved-chunks chunks-config.json \
+  --entry-chunks "search,main" \
+  --initial-chunk-max-size 20
+```
 
 ## .chunkgroupignore 파일
 
@@ -200,7 +252,7 @@ npx chunk-analyzer 실행
 
 ```typescript
 // chunk-groups.config.ts
-export const CACHE_KEY = 'e0d3e9db625afd4e20ffc4d8481d3a71';  // lockfile MD5 해시
+export const CACHE_KEY = 'e0d3e9db625afd4e20ffc4d8481d3a71'; // lockfile MD5 해시
 
 export const CHUNK_GROUPS: ChunkGroup[] = [
   // ...
@@ -218,43 +270,260 @@ export const CHUNK_GROUPS: ChunkGroup[] = [
 
 > 💡 **강제 재분석**: config 파일을 삭제하면 다음 빌드에서 재분석됩니다.
 
+## 사용자 정의 그룹 (customGroups) ✨ **NEW**
+
+특정 패키지를 원하는 청크로 직접 그룹핑할 수 있습니다. `customGroups`는 **모든 자동 분석보다 먼저** 처리됩니다.
+
+**chunks-config.json에 추가**:
+
+```json
+{
+  "customGroups": {
+    "vendor/charts": ["chart.js", "chartjs-*", "react-chartjs-*"],
+    "vendor/maps": ["leaflet", "react-leaflet", "@react-leaflet/*"],
+    "vendor/date": ["date-fns", "dayjs", "moment"]
+  }
+}
+```
+
+**패턴 매칭 규칙**:
+
+- 정확한 이름: `chart.js` → `chart.js` 패키지만
+- 접두사 매칭: `chartjs-*` → `chartjs-plugin-datalabels`, `chartjs-adapter-date-fns` 등
+- 스코프 패턴: `@react-leaflet/*` → `@react-leaflet/core`, `@react-leaflet/hooks` 등
+
+**사용 사례**:
+
+- 특정 기능별 벤더 청크 분리 (차트, 지도, 날짜 처리 등)
+- 레거시 라이브러리 별도 분리
+- A/B 테스트용 청크 분리
+
 ## 동작 방식
 
-### 분석 알고리즘
+### 분석 알고리즘 (하이브리드 접근)
 
-chunk-analyzer는 **의존성 그래프 기반** 분석을 수행합니다:
+chunk-analyzer는 **프레임워크 감지 + 그래프 기반 분석 + TCP Slow Start 최적화**를 수행합니다:
 
-1. **React Core 그룹** - 변경 빈도가 낮은 핵심 런타임
-   - react, react-dom, scheduler 등
+#### 0. Preserved Chunks (초기 HTML 최적화) ✨ **NEW**
 
-2. **대형 패키지 분리** - 100KB 이상인 패키지는 개별 청크로
-   - 독립적 캐싱 이점 > 추가 요청 비용
+**TCP Slow Start 최적화**를 위해 초기 HTML에 포함될 필수 청크를 관리합니다:
 
-3. **의존성 클러스터** - 함께 import되는 패키지 묶기
-   - state-routing: 라우팅 + 상태관리
-   - utils: 유틸리티 라이브러리
-   - animation: 애니메이션 관련
+- **initialChunkMaxSize**: 14KB (gzipped) - TCP Initial Window (IW10) 기준
+- **preservedChunks**: 초기 렌더링에 필요한 패키지를 보장된 청크로 생성
+- **entryChunks**: 애플리케이션 진입점 파일 (예: `search.js`)
 
-4. **나머지** → `vendor/misc`
+**왜 14KB인가?**
 
-### 내장 패키지 그룹 (Known Groups)
+- TCP Slow Start는 초기 연결 시 14.6KB (IW10 = 10 segments × 1460 bytes)까지만 한 번에 전송
+- 이를 초과하면 추가 RTT(왕복 시간)가 필요하여 초기 로딩 속도 저하
+- HTTP/2 환경에서는 여러 작은 파일을 병렬 로드하는 것이 하나의 큰 파일보다 빠름
 
-다음 패키지들은 자동으로 최적의 그룹으로 분류됩니다:
+**자동 분할 기능**:
 
-| 그룹               | 패키지                                                                                                                                               | 설명                  |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| `react-core`       | react, react-dom, scheduler, react-is, react-fast-compare, react-style-singleton, use-callback-ref, use-sidecar, hoist-non-react-statics, prop-types | React 핵심 런타임     |
-| `react-extensions` | react-error-boundary, react-helmet-async, react-remove-scroll, react-transition-group                                                                | React 확장 라이브러리 |
-| `state-management` | @tanstack/react-query, @tanstack/query-core, jotai, zustand, recoil                                                                                  | 상태 관리             |
-| `styling`          | styled-components, stylis, @emotion/react, @emotion/styled                                                                                           | CSS-in-JS             |
-| `routing`          | react-router, react-router-dom, @remix-run/router, use-query-params                                                                                  | 라우팅                |
-| `utils`            | axios, dayjs, lodash, lodash.throttle, lodash.debounce, jwt-decode                                                                                   | 유틸리티              |
-| `monitoring`       | @datadog/browser-rum, @datadog/browser-logs, @sentry/react, @sentry/browser                                                                          | 모니터링              |
-| `animation`        | framer-motion, motion, lottie-web, lottie-react                                                                                                      | 애니메이션            |
-| `heavy-ui`         | swiper, react-virtuoso, @tanstack/react-virtual                                                                                                      | 무거운 UI 컴포넌트    |
-| `form`             | react-hook-form, @hookform/resolvers, zod, yup                                                                                                       | 폼 관리               |
+```json
+{
+  "preservedChunks": [
+    {
+      "name": "vendor",
+      "patterns": ["react", "react-dom"],
+      "maxSize": 14336, // 14KB (bytes)
+      "splitStrategy": "auto" // 초과 시 자동 분할
+    }
+  ]
+}
+```
 
-> 📌 **버전 기준**: 2024년 12월 기준 최신 안정 버전 (React 18.x, React Router 6.x, TanStack Query v5 등)
+크기가 14KB를 초과하면 자동으로 `vendor-1.js`, `vendor-2.js` 등으로 분할됩니다.
+
+**프레임워크별 설정 (Circular Dependency 주의)**:
+
+`npx chunk-analyzer init` 명령어는 프레임워크를 자동 감지하고 최적화된 `chunks-config.json`을 생성합니다.
+
+**React 프로젝트**:
+
+```json
+{
+  "preservedChunks": [
+    {
+      "name": "vendor",
+      "patterns": ["react", "react-dom", "scheduler", "prop-types"],
+      "maxSize": 14336,
+      "splitStrategy": "manual",
+      "reason": "React has circular dependencies - react-dom depends on react internals"
+    }
+  ]
+}
+```
+
+⚠️ **주의**: React는 `react-dom`이 `react` 내부 API에 의존하므로 **자동 분할하면 안 됩니다**. `splitStrategy: "manual"`로 설정하여 하나의 청크로 유지해야 합니다.
+
+**Vue 프로젝트**:
+
+```json
+{
+  "preservedChunks": [
+    {
+      "name": "vendor",
+      "patterns": [
+        "vue",
+        "@vue/runtime-dom",
+        "@vue/runtime-core",
+        "@vue/reactivity",
+        "@vue/shared"
+      ],
+      "maxSize": 14336,
+      "splitStrategy": "manual",
+      "reason": "Vue runtime modules share internal utilities"
+    }
+  ]
+}
+```
+
+⚠️ **주의**: Vue도 `@vue/shared`가 모든 Vue 패키지의 공통 유틸리티이므로 **자동 분할하면 안 됩니다**.
+
+**Svelte 프로젝트**:
+
+```json
+{
+  "preservedChunks": [
+    {
+      "name": "vendor",
+      "patterns": ["svelte"],
+      "maxSize": 14336,
+      "splitStrategy": "auto",
+      "reason": "Svelte has no circular dependencies - safe to auto-split"
+    }
+  ]
+}
+```
+
+✅ **안전**: Svelte는 circular dependency가 없어 `splitStrategy: "auto"`로 안전하게 분할할 수 있습니다.
+
+**Angular 프로젝트**:
+
+```json
+{
+  "preservedChunks": [
+    {
+      "name": "vendor",
+      "patterns": [
+        "@angular/core",
+        "@angular/common",
+        "@angular/platform-browser",
+        "rxjs",
+        "tslib"
+      ],
+      "maxSize": 14336,
+      "splitStrategy": "manual",
+      "reason": "Angular modules have strong DI dependencies"
+    }
+  ]
+}
+```
+
+⚠️ **주의**: Angular는 Dependency Injection으로 인한 강한 내부 의존성이 있어 **자동 분할하면 안 됩니다**.
+
+**splitStrategy 옵션 설명**:
+
+- `"auto"`: maxSize 초과 시 자동으로 여러 청크로 분할 (circular dependency 없을 때만 안전)
+- `"manual"`: maxSize 초과 시 경고만 표시, 분할하지 않음 (circular dependency 있을 때 필수)
+
+#### 1. 프레임워크 자동 감지
+
+프로젝트의 패키지를 분석하여 사용 중인 프레임워크를 자동으로 감지합니다:
+
+- **React**: `react-dom` 패키지 존재
+- **Vue**: `@vue/runtime-dom` 패키지 존재
+- **Svelte**: `svelte` 패키지 존재
+- **Angular**: `@angular/core` 패키지 존재
+- **Unknown**: 프레임워크 미감지 (공통 그룹만 사용)
+
+#### 2. 프레임워크 코어 그룹 (Critical Priority)
+
+프레임워크별 핵심 패키지를 우선 그룹핑합니다:
+
+**React 프로젝트**:
+
+- `vendor/react-core`: react, react-dom, scheduler, prop-types 등
+- 이유: 프레임워크 내부 의존성 (의존성 그래프로 발견 어려움)
+
+**Vue 프로젝트**:
+
+- `vendor/vue-core`: vue, @vue/runtime-dom, @vue/shared 등
+- 이유: Vue 내부 공통 유틸리티
+
+**Svelte 프로젝트**:
+
+- `vendor/svelte-core`: svelte, svelte/internal 등
+- 이유: 컴파일된 컴포넌트의 내부 의존성
+
+**Angular 프로젝트**:
+
+- `vendor/angular-core`: @angular/core, rxjs, zone.js 등
+- 이유: Angular + RxJS 생태계 통합
+
+**공통 그룹 (모든 프레임워크)**:
+
+- `vendor/styling`: styled-components, @emotion/react 등 (CSS-in-JS)
+
+#### 3. 대형 패키지 개별 분리
+
+100KB 이상인 패키지는 개별 청크로 분리:
+
+- 독립적 캐싱 이점 > 추가 요청 비용
+
+#### 4. 그래프 기반 자동 클러스터링 ✨ **NEW**
+
+**co-import 패턴 분석**을 통해 자주 함께 사용되는 패키지를 자동으로 클러스터링:
+
+- **최소 co-import 빈도**: 3회 이상 함께 import
+- **최소 응집도**: 0.5 이상 (내부 연결 / 전체 연결)
+- **최소 크기**: 20KB 이상
+
+**예시**:
+
+```
+react-hook-form + zod + @hookform/resolvers
+→ 10개 파일에서 함께 import됨
+→ 응집도: 0.87
+→ vendor/react-hook-form 클러스터 생성
+```
+
+**장점**:
+
+- ✅ 프레임워크 무관 (React/Vue/Svelte 모두 동작)
+- ✅ 새 패키지 자동 대응
+- ✅ 실제 사용 패턴 기반 (하드코딩 제거)
+- ✅ 의존성 그래프 무결성 보장
+
+#### 5. 나머지 패키지
+
+분류되지 않은 패키지는 `vendor/misc`로 묶음
+
+### 프레임워크별 최적화 예시
+
+**React 프로젝트**:
+
+```typescript
+// 자동 생성되는 청크 그룹
+[
+  { name: 'vendor/react-core', patterns: ['react', 'react-dom', 'scheduler', ...] },
+  { name: 'vendor/styling', patterns: ['styled-components', 'stylis'] },
+  { name: 'vendor/react-hook-form', patterns: ['react-hook-form', 'zod'], cohesion: 0.87 },
+  // ... 그래프 기반 자동 클러스터
+]
+```
+
+**Vue 프로젝트**:
+
+```typescript
+[
+  { name: 'vendor/vue-core', patterns: ['vue', '@vue/runtime-dom', '@vue/shared', ...] },
+  { name: 'vendor/styling', patterns: ['@emotion/vue'] },
+  { name: 'vendor/pinia', patterns: ['pinia', 'vue-demi'], cohesion: 0.92 },
+  // ... 그래프 기반 자동 클러스터
+]
+```
 
 ### 청크 크기 권장 기준
 
@@ -268,14 +537,62 @@ chunk-analyzer는 **의존성 그래프 기반** 분석을 수행합니다:
 ### 워크플로우
 
 ```
-chunk-analyzer → vite build
-     │                │
-     │                └── chunk-groups.config.ts 사용
-     │
-     ├── Step 1: vite build (stats.json 생성)
-     ├── Step 2: 의존성 그래프 분석
-     └── Step 3: chunk-groups.config.ts 생성
+chunk-analyzer 실행
+  │
+  ├─ Step 1: vite build (stats.json 생성)
+  │
+  ├─ Step 2: 의존성 그래프 분석
+  │   ├─ 프레임워크 감지 (React/Vue/Svelte/Angular)
+  │   ├─ Framework Core Groups 처리
+  │   ├─ Large Isolated Packages (100KB+)
+  │   ├─ Graph-Based Clustering (co-import 패턴)
+  │   └─ Remaining → misc
+  │
+  └─ Step 3: chunk-groups.config.ts 생성
+       └─ vite build가 이 config 사용
 ```
+
+## 출력 메타데이터
+
+생성된 config 파일은 각 청크 그룹에 대한 메타데이터를 포함합니다:
+
+```typescript
+export const CHUNK_GROUPS: ChunkGroup[] = [
+  {
+    name: 'vendor/react-core',
+    patterns: ['react', 'react-dom', 'scheduler'],
+    estimatedSize: 156234,
+    reason: 'Framework core with internal dependencies',
+    metadata: {
+      clusteringMethod: 'framework-core',
+      priority: 'critical',
+      description: 'React 핵심 런타임',
+    },
+  },
+  {
+    name: 'vendor/react-hook-form',
+    patterns: ['react-hook-form', 'zod', '@hookform/resolvers'],
+    estimatedSize: 87654,
+    reason: 'Co-imported cluster (cohesion: 0.87, avg freq: 9.3x)',
+    metadata: {
+      clusteringMethod: 'graph-based',
+      cohesion: 0.87,
+      coImportFrequency: 9.3,
+      centralPackage: 'react-hook-form',
+    },
+  },
+];
+```
+
+**클러스터링 방법**:
+
+- `custom`: 사용자 정의 그룹 (최우선 처리) ✨ **NEW**
+- `preserved`: 초기 HTML 보장 청크 (TCP 최적화)
+- `entry`: 애플리케이션 진입점 청크
+- `framework-core`: 프레임워크 코어 그룹
+- `large-isolated`: 대형 패키지 개별 분리
+- `graph-based`: 그래프 기반 자동 클러스터링
+- `misc`: 나머지 패키지
 
 ## stats.json 자동 탐색 경로
 
@@ -297,7 +614,9 @@ chunk-analyzer → vite build
 
 ## Features
 
-- Dependency graph-based bundle analysis
+- **Dependency graph-based** bundle analysis
+- **Automatic framework detection** (React, Vue, Svelte, Angular)
+- **Graph-based auto-clustering** - co-import pattern analysis
 - Automatic optimal `manualChunks` configuration
 - CLI tool support
 - TypeScript config file generation
@@ -337,7 +656,7 @@ export default defineConfig({
     visualizer({
       filename: 'dist/report.html',
       template: 'treemap',
-      open: true,  // set to false to disable browser open
+      open: true, // set to false to disable browser open
       gzipSize: true,
       brotliSize: true,
     }),
@@ -353,6 +672,7 @@ export default defineConfig({
 ```
 
 > ⚠️ **Important**: You need TWO visualizer configurations.
+>
 > - `template: 'raw-data'` + `open: false` → JSON for chunk-analyzer
 > - `template: 'treemap'` + `open: true` → Visual treemap in browser
 
@@ -382,6 +702,7 @@ chunk-analyzer runs the build internally.
 ```
 
 Benefits of this approach:
+
 1. **chunk-analyzer build**: Runs analysis build → updates config (no browser open)
 2. **Production build**: Runs final build with updated config (follows vite.config.ts `open` setting)
 
@@ -422,6 +743,8 @@ chunk-analyzer -t 50
 
 ## CLI Options
 
+### Basic Options
+
 | Option                 | Description                       | Default                  |
 | ---------------------- | --------------------------------- | ------------------------ |
 | `-c, --config <file>`  | Config output path                | `chunk-groups.config.ts` |
@@ -431,6 +754,52 @@ chunk-analyzer -t 50
 | `-q, --quiet`          | Suppress analysis output          | `false`                  |
 | `-f, --format <type>`  | Output format: text, json, config | `text`                   |
 | `--ignore <pattern>`   | Ignore packages (repeatable)      | -                        |
+
+### TCP Slow Start Optimization Options ✨ **NEW**
+
+| Option                           | Description                                  | Default |
+| -------------------------------- | -------------------------------------------- | ------- |
+| `--preserved-chunks <json-file>` | JSON file path for initial HTML chunk config | -       |
+| `--entry-chunks <names>`         | Entry chunk names (comma-separated)          | -       |
+| `--initial-chunk-max-size <kb>`  | Max size for initial chunks (KB, gzipped)    | `14`    |
+
+### Usage Example
+
+**chunks-config.json example**:
+
+```json
+{
+  "preservedChunks": [
+    {
+      "name": "vendor",
+      "patterns": ["react", "react-dom"],
+      "maxSize": 14336,
+      "splitStrategy": "auto",
+      "reason": "Initial HTML vendors (TCP IW10 optimized)"
+    }
+  ],
+  "entryChunks": ["search", "main"],
+  "initialChunkMaxSize": 14336,
+  "customGroups": {
+    "vendor/charts": ["chart.js", "chartjs-*", "react-chartjs-*"],
+    "vendor/maps": ["leaflet", "react-leaflet"],
+    "vendor/date": ["date-fns", "dayjs", "moment"]
+  }
+}
+```
+
+**CLI execution**:
+
+```bash
+# Use JSON file
+chunk-analyzer --preserved-chunks chunks-config.json
+
+# Override with CLI options
+chunk-analyzer \
+  --preserved-chunks chunks-config.json \
+  --entry-chunks "search,main" \
+  --initial-chunk-max-size 20
+```
 
 ## .chunkgroupignore File
 
@@ -487,7 +856,7 @@ npx chunk-analyzer runs
 
 ```typescript
 // chunk-groups.config.ts
-export const CACHE_KEY = 'e0d3e9db625afd4e20ffc4d8481d3a71';  // lockfile MD5 hash
+export const CACHE_KEY = 'e0d3e9db625afd4e20ffc4d8481d3a71'; // lockfile MD5 hash
 
 export const CHUNK_GROUPS: ChunkGroup[] = [
   // ...
@@ -505,43 +874,260 @@ Cache is automatically invalidated when:
 
 > 💡 **Force re-analysis**: Delete the config file to trigger re-analysis on next build.
 
+## Custom Groups (customGroups) ✨ **NEW**
+
+You can directly group specific packages into desired chunks. `customGroups` are processed **before all automatic analysis**.
+
+**Add to chunks-config.json**:
+
+```json
+{
+  "customGroups": {
+    "vendor/charts": ["chart.js", "chartjs-*", "react-chartjs-*"],
+    "vendor/maps": ["leaflet", "react-leaflet", "@react-leaflet/*"],
+    "vendor/date": ["date-fns", "dayjs", "moment"]
+  }
+}
+```
+
+**Pattern Matching Rules**:
+
+- Exact name: `chart.js` → only the `chart.js` package
+- Prefix matching: `chartjs-*` → `chartjs-plugin-datalabels`, `chartjs-adapter-date-fns`, etc.
+- Scope pattern: `@react-leaflet/*` → `@react-leaflet/core`, `@react-leaflet/hooks`, etc.
+
+**Use Cases**:
+
+- Separate vendor chunks by feature (charts, maps, date handling, etc.)
+- Isolate legacy libraries
+- Separate chunks for A/B testing
+
 ## How It Works
 
-### Analysis Algorithm
+### Analysis Algorithm (Hybrid Approach)
 
-chunk-analyzer uses **dependency graph-based** analysis:
+chunk-analyzer uses **framework detection + graph-based analysis + TCP Slow Start optimization**:
 
-1. **React Core Group** - Low change frequency core runtime
-   - react, react-dom, scheduler, etc.
+#### 0. Preserved Chunks (Initial HTML Optimization) ✨ **NEW**
 
-2. **Large Package Separation** - Packages over 100KB get their own chunk
-   - Independent caching benefit > additional request cost
+Manages essential chunks for initial HTML to optimize **TCP Slow Start**:
 
-3. **Dependency Clusters** - Group packages imported together
-   - state-routing: routing + state management
-   - utils: utility libraries
-   - animation: animation related
+- **initialChunkMaxSize**: 14KB (gzipped) - Based on TCP Initial Window (IW10)
+- **preservedChunks**: Guaranteed chunks containing packages needed for initial rendering
+- **entryChunks**: Application entry point files (e.g., `search.js`)
 
-4. **Remaining** → `vendor/misc`
+**Why 14KB?**
 
-### Built-in Package Groups (Known Groups)
+- TCP Slow Start can only send 14.6KB (IW10 = 10 segments × 1460 bytes) in the first roundtrip
+- Exceeding this size requires additional RTTs, slowing initial load
+- In HTTP/2 environments, loading multiple small files in parallel is faster than one large file
 
-The following packages are automatically classified into optimal groups:
+**Auto-split feature**:
 
-| Group              | Packages                                                                                                                                             | Description               |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
-| `react-core`       | react, react-dom, scheduler, react-is, react-fast-compare, react-style-singleton, use-callback-ref, use-sidecar, hoist-non-react-statics, prop-types | React core runtime        |
-| `react-extensions` | react-error-boundary, react-helmet-async, react-remove-scroll, react-transition-group                                                                | React extension libraries |
-| `state-management` | @tanstack/react-query, @tanstack/query-core, jotai, zustand, recoil                                                                                  | State management          |
-| `styling`          | styled-components, stylis, @emotion/react, @emotion/styled                                                                                           | CSS-in-JS                 |
-| `routing`          | react-router, react-router-dom, @remix-run/router, use-query-params                                                                                  | Routing                   |
-| `utils`            | axios, dayjs, lodash, lodash.throttle, lodash.debounce, jwt-decode                                                                                   | Utilities                 |
-| `monitoring`       | @datadog/browser-rum, @datadog/browser-logs, @sentry/react, @sentry/browser                                                                          | Monitoring                |
-| `animation`        | framer-motion, motion, lottie-web, lottie-react                                                                                                      | Animation                 |
-| `heavy-ui`         | swiper, react-virtuoso, @tanstack/react-virtual                                                                                                      | Heavy UI components       |
-| `form`             | react-hook-form, @hookform/resolvers, zod, yup                                                                                                       | Form management           |
+```json
+{
+  "preservedChunks": [
+    {
+      "name": "vendor",
+      "patterns": ["react", "react-dom"],
+      "maxSize": 14336, // 14KB (bytes)
+      "splitStrategy": "auto" // Auto-split when exceeded
+    }
+  ]
+}
+```
 
-> 📌 **Version Reference**: Based on latest stable versions as of December 2024 (React 18.x, React Router 6.x, TanStack Query v5, etc.)
+When size exceeds 14KB, automatically splits into `vendor-1.js`, `vendor-2.js`, etc.
+
+**Framework-Specific Configuration (Circular Dependency Warning)**:
+
+`npx chunk-analyzer init` detects your framework and generates an optimized `chunks-config.json`.
+
+**React Projects**:
+
+```json
+{
+  "preservedChunks": [
+    {
+      "name": "vendor",
+      "patterns": ["react", "react-dom", "scheduler", "prop-types"],
+      "maxSize": 14336,
+      "splitStrategy": "manual",
+      "reason": "React has circular dependencies - react-dom depends on react internals"
+    }
+  ]
+}
+```
+
+⚠️ **Warning**: React has circular dependencies between `react-dom` and `react` internals. **DO NOT use auto-split**. Keep `splitStrategy: "manual"` to maintain a single chunk.
+
+**Vue Projects**:
+
+```json
+{
+  "preservedChunks": [
+    {
+      "name": "vendor",
+      "patterns": [
+        "vue",
+        "@vue/runtime-dom",
+        "@vue/runtime-core",
+        "@vue/reactivity",
+        "@vue/shared"
+      ],
+      "maxSize": 14336,
+      "splitStrategy": "manual",
+      "reason": "Vue runtime modules share internal utilities"
+    }
+  ]
+}
+```
+
+⚠️ **Warning**: Vue's `@vue/shared` is a common utility for all Vue packages. **DO NOT use auto-split**.
+
+**Svelte Projects**:
+
+```json
+{
+  "preservedChunks": [
+    {
+      "name": "vendor",
+      "patterns": ["svelte"],
+      "maxSize": 14336,
+      "splitStrategy": "auto",
+      "reason": "Svelte has no circular dependencies - safe to auto-split"
+    }
+  ]
+}
+```
+
+✅ **Safe**: Svelte has no circular dependencies, so `splitStrategy: "auto"` is safe.
+
+**Angular Projects**:
+
+```json
+{
+  "preservedChunks": [
+    {
+      "name": "vendor",
+      "patterns": [
+        "@angular/core",
+        "@angular/common",
+        "@angular/platform-browser",
+        "rxjs",
+        "tslib"
+      ],
+      "maxSize": 14336,
+      "splitStrategy": "manual",
+      "reason": "Angular modules have strong DI dependencies"
+    }
+  ]
+}
+```
+
+⚠️ **Warning**: Angular has strong Dependency Injection dependencies. **DO NOT use auto-split**.
+
+**splitStrategy Options**:
+
+- `"auto"`: Auto-split into multiple chunks when exceeding maxSize (safe only without circular dependencies)
+- `"manual"`: Only show warning when exceeding maxSize, no splitting (required with circular dependencies)
+
+#### 1. Automatic Framework Detection
+
+Analyzes your project's packages to automatically detect the framework:
+
+- **React**: `react-dom` package exists
+- **Vue**: `@vue/runtime-dom` package exists
+- **Svelte**: `svelte` package exists
+- **Angular**: `@angular/core` package exists
+- **Unknown**: No framework detected (uses common groups only)
+
+#### 2. Framework Core Groups (Critical Priority)
+
+Groups core framework packages first:
+
+**React Projects**:
+
+- `vendor/react-core`: react, react-dom, scheduler, prop-types, etc.
+- Reason: Framework internal dependencies (hard to discover via dependency graph)
+
+**Vue Projects**:
+
+- `vendor/vue-core`: vue, @vue/runtime-dom, @vue/shared, etc.
+- Reason: Vue internal shared utilities
+
+**Svelte Projects**:
+
+- `vendor/svelte-core`: svelte, svelte/internal, etc.
+- Reason: Compiled component internal dependencies
+
+**Angular Projects**:
+
+- `vendor/angular-core`: @angular/core, rxjs, zone.js, etc.
+- Reason: Angular + RxJS ecosystem integration
+
+**Common Groups (All Frameworks)**:
+
+- `vendor/styling`: styled-components, @emotion/react, etc. (CSS-in-JS)
+
+#### 3. Large Package Separation
+
+Packages over 100KB get their own chunk:
+
+- Independent caching benefit > additional request cost
+
+#### 4. Graph-Based Auto-Clustering ✨ **NEW**
+
+Automatically clusters packages frequently imported together using **co-import pattern analysis**:
+
+- **Minimum co-import frequency**: 3+ times imported together
+- **Minimum cohesion**: 0.5+ (internal edges / total edges)
+- **Minimum size**: 20KB+
+
+**Example**:
+
+```
+react-hook-form + zod + @hookform/resolvers
+→ Imported together in 10 files
+→ Cohesion: 0.87
+→ Creates vendor/react-hook-form cluster
+```
+
+**Benefits**:
+
+- ✅ Framework-agnostic (works for React/Vue/Svelte)
+- ✅ Automatic adaptation to new packages
+- ✅ Based on actual usage patterns (no hardcoding)
+- ✅ Guarantees dependency graph integrity
+
+#### 5. Remaining Packages
+
+Uncategorized packages go to `vendor/misc`
+
+### Framework-Specific Optimization Examples
+
+**React Projects**:
+
+```typescript
+// Auto-generated chunk groups
+[
+  { name: 'vendor/react-core', patterns: ['react', 'react-dom', 'scheduler', ...] },
+  { name: 'vendor/styling', patterns: ['styled-components', 'stylis'] },
+  { name: 'vendor/react-hook-form', patterns: ['react-hook-form', 'zod'], cohesion: 0.87 },
+  // ... graph-based auto-clusters
+]
+```
+
+**Vue Projects**:
+
+```typescript
+[
+  { name: 'vendor/vue-core', patterns: ['vue', '@vue/runtime-dom', '@vue/shared', ...] },
+  { name: 'vendor/styling', patterns: ['@emotion/vue'] },
+  { name: 'vendor/pinia', patterns: ['pinia', 'vue-demi'], cohesion: 0.92 },
+  // ... graph-based auto-clusters
+]
+```
 
 ### Recommended Chunk Size Guidelines
 
@@ -555,14 +1141,62 @@ The following packages are automatically classified into optimal groups:
 ### Workflow
 
 ```
-chunk-analyzer → vite build
-     │                │
-     │                └── Uses chunk-groups.config.ts
-     │
-     ├── Step 1: vite build (generates stats.json)
-     ├── Step 2: Dependency graph analysis
-     └── Step 3: Generate chunk-groups.config.ts
+chunk-analyzer execution
+  │
+  ├─ Step 1: vite build (generates stats.json)
+  │
+  ├─ Step 2: Dependency graph analysis
+  │   ├─ Framework detection (React/Vue/Svelte/Angular)
+  │   ├─ Framework Core Groups processing
+  │   ├─ Large Isolated Packages (100KB+)
+  │   ├─ Graph-Based Clustering (co-import patterns)
+  │   └─ Remaining → misc
+  │
+  └─ Step 3: Generate chunk-groups.config.ts
+       └─ vite build uses this config
 ```
+
+## Output Metadata
+
+Generated config file includes metadata for each chunk group:
+
+```typescript
+export const CHUNK_GROUPS: ChunkGroup[] = [
+  {
+    name: 'vendor/react-core',
+    patterns: ['react', 'react-dom', 'scheduler'],
+    estimatedSize: 156234,
+    reason: 'Framework core with internal dependencies',
+    metadata: {
+      clusteringMethod: 'framework-core',
+      priority: 'critical',
+      description: 'React core runtime',
+    },
+  },
+  {
+    name: 'vendor/react-hook-form',
+    patterns: ['react-hook-form', 'zod', '@hookform/resolvers'],
+    estimatedSize: 87654,
+    reason: 'Co-imported cluster (cohesion: 0.87, avg freq: 9.3x)',
+    metadata: {
+      clusteringMethod: 'graph-based',
+      cohesion: 0.87,
+      coImportFrequency: 9.3,
+      centralPackage: 'react-hook-form',
+    },
+  },
+];
+```
+
+**Clustering Methods**:
+
+- `custom`: User-defined custom groups (highest priority) ✨ **NEW**
+- `preserved`: Initial HTML guaranteed chunks (TCP optimization)
+- `entry`: Application entry point chunks
+- `framework-core`: Framework core groups
+- `large-isolated`: Large package separation
+- `graph-based`: Graph-based auto-clustering
+- `misc`: Remaining packages
 
 ## Auto-detected stats.json Paths
 

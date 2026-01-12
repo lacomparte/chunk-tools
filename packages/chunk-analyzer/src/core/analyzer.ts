@@ -1,5 +1,4 @@
 import { DEFAULT_OPTIONS } from '../constants/defaults.constant.js';
-import { KNOWN_GROUPS } from '../constants/known-groups.constant.js';
 import type {
   AnalyzerOptions,
   ChunkGroup,
@@ -7,7 +6,16 @@ import type {
 } from '../types/index.js';
 import { formatSize } from '../utils/format-size.util.js';
 import { filterIgnoredPackages } from '../utils/ignore-file.util.js';
+import { generateSafeName } from '../utils/package-name.util.js';
 
+/**
+ * 간단한 패키지 기반 분석
+ *
+ * 이 함수는 의존성 그래프 없이 패키지 정보만으로 분석합니다.
+ * customGroups만 사용하며, 프레임워크별 최적화는 제공하지 않습니다.
+ *
+ * 프레임워크 최적화가 필요한 경우 analyzeWithDependencyGraph()를 사용하세요.
+ */
 export const analyzePackages = (
   packages: PackageInfo[],
   options: AnalyzerOptions = {},
@@ -17,36 +25,36 @@ export const analyzePackages = (
   const suggestions: ChunkGroup[] = [];
 
   const filteredPackages = filterIgnoredPackages(packages, opts.ignore);
-  const allGroups = mergeGroups(opts.customGroups);
 
-  processKnownGroups(filteredPackages, allGroups, assigned, suggestions);
+  // customGroups만 처리 (기본 그룹 없음)
+  if (opts.customGroups) {
+    processCustomGroups(
+      filteredPackages,
+      opts.customGroups,
+      assigned,
+      suggestions,
+    );
+  }
+
   processLargePackages(filteredPackages, opts, assigned, suggestions);
   processRemainingPackages(filteredPackages, assigned, suggestions);
 
   return suggestions.sort((a, b) => b.estimatedSize - a.estimatedSize);
 };
 
-const mergeGroups = (
-  customGroups: Record<string, string[]>,
-): Record<string, { patterns: string[]; description: string }> => {
-  const merged = { ...KNOWN_GROUPS };
-  for (const [name, patterns] of Object.entries(customGroups)) {
-    merged[name] = { patterns, description: `커스텀 그룹: ${name}` };
-  }
-  return merged;
-};
-
-const processKnownGroups = (
+const processCustomGroups = (
   packages: PackageInfo[],
-  groups: Record<string, { patterns: string[]; description: string }>,
+  customGroups: Record<string, string[]>,
   assigned: Set<string>,
   suggestions: ChunkGroup[],
 ): void => {
-  for (const [groupKey, groupDef] of Object.entries(groups)) {
-    const matched = findMatchedPackages(packages, groupDef.patterns);
+  for (const [groupKey, patterns] of Object.entries(customGroups)) {
+    const matched = findMatchedPackages(packages, patterns);
     if (matched.length === 0) continue;
 
-    suggestions.push(createChunkGroup(groupKey, matched, groupDef.description));
+    suggestions.push(
+      createChunkGroup(groupKey, matched, `Custom group: ${groupKey}`),
+    );
     matched.forEach((pkg) => assigned.add(pkg.name));
   }
 };
@@ -86,7 +94,7 @@ const processLargePackages = (
   );
 
   for (const pkg of large) {
-    const safeName = pkg.name.replace(/[@/]/g, '-').replace(/^-/, '');
+    const safeName = generateSafeName(pkg.name);
     suggestions.push({
       name: `vendor/${safeName}`,
       patterns: [pkg.name],

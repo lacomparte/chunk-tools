@@ -18,6 +18,8 @@ import {
 import type {
   AnalyzerOptions,
   BudgetOptions,
+  ChunksConfig,
+  PackageInfo,
   VisualizerStats,
   VisualizerStatsV2,
 } from '../../types/index.js';
@@ -25,6 +27,15 @@ import { calculateLockfileHash, isCacheValid } from '../../utils/cache.util.js';
 import { parseExistingConfig } from '../../utils/config-parser.util.js';
 import { calculateDiff, formatDiff } from '../../utils/diff-formatter.util.js';
 import { formatSize } from '../../utils/format-size.util.js';
+import {
+  detectFramework,
+  getFrameworkDisplayName,
+} from '../../utils/framework-detector.js';
+import {
+  generatePreservedChunksConfig,
+  getConfigSummary,
+  getFrameworkMessage,
+} from '../../utils/framework-presets.util.js';
 import {
   findIgnoreFile,
   parseIgnoreFile,
@@ -49,6 +60,10 @@ type CliArgs = {
   failOnBudget: boolean;
   // Dry-run option
   dryRun: boolean;
+  // Preserved chunks & initial chunk size options
+  preservedChunks?: string;
+  entryChunks?: string;
+  initialChunkMaxSize?: number;
 };
 
 export const runCli = (): void => {
@@ -104,6 +119,7 @@ const parseArgs = (args: string[]): CliArgs => {
   return result;
 };
 
+// eslint-disable-next-line max-lines-per-function -- Complex CLI argument parsing with multiple validation steps
 const parseArg = (
   arg: string,
   args: string[],
@@ -141,7 +157,7 @@ const parseArg = (
       return true;
     case '-t':
     case '--threshold':
-      result.threshold = parseInt(args[i + 1], 10);
+      result.threshold = Number.parseInt(args[i + 1], 10);
       return true;
     case '--ignore':
       result.ignore.push(args[i + 1]);
@@ -164,16 +180,16 @@ const parseArg = (
       return false;
     // Budget options
     case '--budget-total':
-      result.budgetTotal = parseInt(args[i + 1], 10);
+      result.budgetTotal = Number.parseInt(args[i + 1], 10);
       return true;
     case '--budget-gzip':
-      result.budgetGzip = parseInt(args[i + 1], 10);
+      result.budgetGzip = Number.parseInt(args[i + 1], 10);
       return true;
     case '--budget-brotli':
-      result.budgetBrotli = parseInt(args[i + 1], 10);
+      result.budgetBrotli = Number.parseInt(args[i + 1], 10);
       return true;
     case '--budget-chunk':
-      result.budgetChunk = parseInt(args[i + 1], 10);
+      result.budgetChunk = Number.parseInt(args[i + 1], 10);
       return true;
     case '--fail-on-budget':
       result.failOnBudget = true;
@@ -182,6 +198,16 @@ const parseArg = (
     case '--dry-run':
       result.dryRun = true;
       return false;
+    // Preserved chunks & initial chunk size options
+    case '--preserved-chunks':
+      result.preservedChunks = args[i + 1];
+      return true;
+    case '--entry-chunks':
+      result.entryChunks = args[i + 1];
+      return true;
+    case '--initial-chunk-max-size':
+      result.initialChunkMaxSize = Number.parseInt(args[i + 1], 10);
+      return true;
     default:
       if (!arg.startsWith('-') && !result.input) {
         result.input = arg;
@@ -190,6 +216,7 @@ const parseArg = (
   }
 };
 
+// eslint-disable-next-line max-lines-per-function -- Comprehensive help text with all CLI options
 const printHelp = (): void => {
   console.log(`
 ${pc.bold(pc.cyan('chunk-analyzer'))}
@@ -226,6 +253,11 @@ ${pc.bold('Preview Options:')}
   --dry-run               Preview changes without modifying config file
                           Shows diff between current config and new analysis
 
+${pc.bold('TCP Slow Start Optimization:')}
+  --preserved-chunks <file>    JSON config file for preserved chunks (initial HTML)
+  --entry-chunks <names>       Comma-separated entry chunk names
+  --initial-chunk-max-size <kb> Max size for initial chunks in KB (default: 14)
+
 ${pc.bold('.chunkgroupignore file:')}
   Create a .chunkgroupignore file to exclude packages from grouping.
   Uses .gitignore-style patterns (glob, negation with !)
@@ -253,6 +285,9 @@ ${pc.bold('Examples:')}
   ${pc.dim('# Generate JSON report')}
   chunk-analyzer analyze -f json -o report.json dist/stats.json
 
+  ${pc.dim('# TCP slow start optimization with preserved chunks')}
+  chunk-analyzer --preserved-chunks chunks-config.json --entry-chunks search
+
 ${pc.bold('Getting Started:')}
   1. Install: ${pc.dim('pnpm add -D chunk-analyzer rollup-plugin-visualizer')}
 
@@ -277,10 +312,13 @@ const printVersion = (): void => {
   console.log('0.1.0');
 };
 
-// 빈 config 파일 생성 (최초 빌드용)
+// 빈 config 파일 생성 + 프레임워크별 chunks-config.json 생성
+// eslint-disable-next-line max-lines-per-function -- Config file initialization with framework detection and preset generation
 const runInit = (args: CliArgs): void => {
   const configOutput = args.configOutput ?? 'chunk-groups.config.ts';
+  const chunksConfigPath = 'chunks-config.json';
   const configPath = resolve(process.cwd(), configOutput);
+  const chunksPath = resolve(process.cwd(), chunksConfigPath);
 
   if (existsSync(configPath)) {
     console.log(pc.yellow(`Config file already exists: ${configPath}`));
@@ -290,6 +328,19 @@ const runInit = (args: CliArgs): void => {
     return;
   }
 
+  // Step 1: Detect framework from package.json
+  console.log();
+  console.log(pc.bold(pc.cyan('🔍 package.json에서 프레임워크 감지 중...')));
+
+  const framework = detectFrameworkFromPackageJson();
+  const frameworkName = getFrameworkDisplayName(framework);
+  console.log(pc.green(`✓ 감지됨: ${frameworkName}`));
+  console.log();
+
+  // Step 2: Generate config files
+  console.log(pc.bold(pc.cyan('📝 설정 파일 생성 중...')));
+
+  // 2-1. chunk-groups.config.ts (빈 설정)
   const configDir = dirname(configPath);
   if (!existsSync(configDir)) {
     mkdirSync(configDir, { recursive: true });
@@ -297,30 +348,78 @@ const runInit = (args: CliArgs): void => {
 
   const emptyConfig = generateEmptyConfig();
   writeFileSync(configPath, emptyConfig);
+  console.log(pc.green(`✓ 생성됨: ${configPath} (초기 빌드용 빈 설정)`));
 
-  console.log(pc.green(`✓ Created: ${configPath}`));
+  // 2-2. chunks-config.json (프레임워크 프리셋)
+  const chunksConfig = generatePreservedChunksConfig(framework);
+  writeFileSync(chunksPath, JSON.stringify(chunksConfig, null, 2));
+  console.log(
+    pc.green(`✓ 생성됨: ${chunksConfigPath} (${frameworkName} 최적화 설정)`),
+  );
   console.log();
-  console.log(pc.bold('Next steps:'));
-  console.log(pc.dim('  1. Add visualizer to vite.config.ts:'));
+
+  // Step 3: Display framework-specific message
+  const message = getFrameworkMessage(framework);
+  console.log(message);
+  console.log();
+
+  // Step 4: Display config summary
+  const summary = getConfigSummary(framework);
+  console.log(summary);
+  console.log();
+
+  // Step 5: Next steps
+  console.log(pc.bold('다음 단계:'));
+  console.log(pc.dim('  1. vite.config.ts에 visualizer 추가:'));
   console.log(
     pc.dim('     visualizer({ json: true, filename: "dist/stats.json" })'),
   );
   console.log();
-  console.log(pc.dim('  2. Import in vite.config.ts:'));
+  console.log(pc.dim('  2. vite.config.ts에 import:'));
   console.log(
     pc.dim(
       `     import { CHUNK_GROUPS, createManualChunks } from "./${configOutput.replace(/\.ts$/, '')}"`,
     ),
   );
   console.log();
-  console.log(pc.dim('  3. Use in rollupOptions.output:'));
+  console.log(pc.dim('  3. rollupOptions.output에 사용:'));
   console.log(pc.dim('     manualChunks: createManualChunks(CHUNK_GROUPS)'));
   console.log();
-  console.log(pc.dim('  4. Add to package.json scripts:'));
-  console.log(pc.dim('     "build": "npx chunk-analyzer -q && vite build"'));
+  console.log(pc.dim('  4. 빌드 실행:'));
+  console.log(
+    pc.dim(
+      `     npx chunk-analyzer --preserved-chunks ${chunksConfigPath} -b "vite build"`,
+    ),
+  );
   console.log();
-  console.log(pc.dim('  5. Run first build:'));
-  console.log(pc.dim('     pnpm build'));
+};
+
+/**
+ * package.json에서 프레임워크 감지
+ */
+const detectFrameworkFromPackageJson = () => {
+  const packageJsonPath = resolve(process.cwd(), 'package.json');
+
+  if (!existsSync(packageJsonPath)) {
+    return 'unknown' as const;
+  }
+
+  try {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    const deps = {
+      ...packageJson.dependencies,
+      ...packageJson.devDependencies,
+    };
+
+    // Simulate PackageInfo Map for detectFramework
+    const packageMap = new Map(
+      Object.keys(deps).map((pkg) => [pkg, { name: pkg } as unknown]),
+    );
+
+    return detectFramework(packageMap as Map<string, PackageInfo>);
+  } catch {
+    return 'unknown' as const;
+  }
 };
 
 const generateEmptyConfig = (): string => `// Auto-generated by chunk-analyzer
@@ -379,6 +478,7 @@ const findStatsFile = (input?: string): string | null => {
 const isV2Stats = (stats: VisualizerStats): stats is VisualizerStatsV2 =>
   stats.version === 2 && 'nodeParts' in stats && 'nodeMetas' in stats;
 
+// eslint-disable-next-line max-lines-per-function -- Stats processing with graph building and package extraction
 // 의존성 그래프 기반 또는 기존 분석 실행
 const runAnalysis = (
   stats: VisualizerStats,
@@ -407,6 +507,64 @@ const runAnalysis = (
   return { packages, suggestions };
 };
 
+/**
+ * JSON 설정 파일 로드 및 옵션 병합
+ */
+// eslint-disable-next-line max-lines-per-function
+const loadChunksConfig = (args: CliArgs, options: AnalyzerOptions): void => {
+  if (!args.preservedChunks) return;
+
+  const configPath = resolve(process.cwd(), args.preservedChunks);
+
+  if (!existsSync(configPath)) {
+    console.error(pc.red(`❌ Config file not found: ${configPath}`));
+    process.exit(1);
+  }
+
+  try {
+    const configContent = readFileSync(configPath, 'utf-8');
+    const config: ChunksConfig = JSON.parse(configContent);
+
+    // JSON 파일에서 옵션 병합
+    if (config.preservedChunks) {
+      options.preservedChunks = config.preservedChunks;
+    }
+    if (config.entryChunks) {
+      options.entryChunks = config.entryChunks;
+    }
+    if (config.initialChunkMaxSize) {
+      options.initialChunkMaxSize = config.initialChunkMaxSize;
+    }
+    if (config.customGroups) {
+      options.customGroups = config.customGroups;
+      console.log(
+        pc.dim(
+          `  Loaded ${Object.keys(config.customGroups).length} custom groups`,
+        ),
+      );
+    }
+
+    console.log(pc.dim(`  Loaded chunks config from ${args.preservedChunks}`));
+  } catch (error) {
+    console.error(
+      pc.red(
+        `❌ Failed to parse config: ${error instanceof Error ? error.message : error}`,
+      ),
+    );
+    process.exit(1);
+  }
+
+  // CLI 인수가 JSON 파일보다 우선순위 높음
+  if (args.entryChunks) {
+    options.entryChunks = args.entryChunks.split(',');
+  }
+
+  if (args.initialChunkMaxSize) {
+    options.initialChunkMaxSize = args.initialChunkMaxSize * 1024; // KB to bytes
+  }
+};
+
+// eslint-disable-next-line max-lines-per-function -- Default command orchestration with stats generation and analysis
 const runDefault = (args: CliArgs): void => {
   const configOutput = args.configOutput ?? 'chunk-groups.config.ts';
   const statsOutput = args.statsOutput ?? 'dist/stats.json';
@@ -472,6 +630,9 @@ const runDefault = (args: CliArgs): void => {
     ignore: ignorePatterns,
   };
 
+  // Preserved chunks & entry chunks 설정 로드
+  loadChunksConfig(args, options);
+
   const { packages, suggestions } = runAnalysis(stats, options, args.quiet);
   const result = createAnalysisResult(packages, suggestions);
 
@@ -520,6 +681,7 @@ const runDefault = (args: CliArgs): void => {
   }
 };
 
+// eslint-disable-next-line max-lines-per-function -- Vite config generation with multiple build scenarios and file I/O
 const createVisualizerBuildCommand = (
   customCommand?: string,
   statsOutput?: string,
@@ -554,6 +716,7 @@ const createVisualizerBuildCommand = (
   );
 };
 
+// eslint-disable-next-line max-lines-per-function -- Analyze command with stats loading, analysis, and output formatting
 const runAnalyze = (args: CliArgs): void => {
   const statsPath = findStatsFile(args.input);
 
@@ -585,6 +748,9 @@ const runAnalyze = (args: CliArgs): void => {
     largePackageThreshold: args.threshold * 1024,
     ignore: ignorePatterns,
   };
+
+  // Preserved chunks & entry chunks 설정 로드
+  loadChunksConfig(args, options);
 
   const { packages, suggestions } = runAnalysis(stats, options, false);
   const result = createAnalysisResult(packages, suggestions);

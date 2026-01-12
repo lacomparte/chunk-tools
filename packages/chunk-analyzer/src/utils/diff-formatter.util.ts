@@ -19,6 +19,7 @@ export type DiffResult = {
 /**
  * 두 ChunkGroup 배열을 비교하여 차이점을 계산합니다.
  */
+// eslint-disable-next-line max-lines-per-function -- Complex diff calculation with multiple comparison scenarios
 export const calculateDiff = (
   before: ChunkGroup[],
   after: ChunkGroup[],
@@ -103,6 +104,7 @@ const getGroupChanges = (before: ChunkGroup, after: ChunkGroup): string[] => {
 /**
  * DiffResult를 사람이 읽을 수 있는 형식으로 포맷팅합니다.
  */
+// eslint-disable-next-line max-lines-per-function -- Comprehensive diff formatting with colors and tables
 export const formatDiff = (diff: DiffResult): string => {
   const lines: string[] = [];
 

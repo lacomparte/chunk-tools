@@ -1,8 +1,10 @@
 import type {
   AnalysisResult,
+  AnalysisSummary,
   BudgetOptions,
   BudgetReport,
   BudgetViolation,
+  ChunkGroup,
 } from '../types/index.js';
 
 const KB = 1024;
@@ -35,50 +37,15 @@ export const checkBudgets = (
   options: BudgetOptions,
 ): BudgetReport => {
   const violations: BudgetViolation[] = [];
-  const { summary, suggestedGroups } = result;
   const warnThreshold = options.warnThreshold ?? 0.9;
 
-  // 총 크기 체크
-  if (options.totalSize) {
-    const budget = options.totalSize * KB;
-    violations.push(
-      createViolation('total', summary.totalSize, budget, warnThreshold),
-    );
-  }
-
-  // gzip 크기 체크
-  if (options.gzipSize) {
-    const budget = options.gzipSize * KB;
-    violations.push(
-      createViolation('gzip', summary.totalGzipSize, budget, warnThreshold),
-    );
-  }
-
-  // brotli 크기 체크
-  if (options.brotliSize) {
-    const budget = options.brotliSize * KB;
-    violations.push(
-      createViolation('brotli', summary.totalBrotliSize, budget, warnThreshold),
-    );
-  }
-
-  // 개별 청크 크기 체크
-  if (options.chunkSize) {
-    const budget = options.chunkSize * KB;
-    for (const group of suggestedGroups) {
-      // 모든 청크에 대해 체크, 경고/에러만 필터링
-      const violation = createViolation(
-        'chunk',
-        group.estimatedSize,
-        budget,
-        warnThreshold,
-        group.name,
-      );
-      if (violation.severity !== 'ok') {
-        violations.push(violation);
-      }
-    }
-  }
+  checkTotalSizeBudgets(result.summary, options, warnThreshold, violations);
+  checkChunkSizeBudgets(
+    result.suggestedGroups,
+    options,
+    warnThreshold,
+    violations,
+  );
 
   const hasError = violations.some((v) => v.severity === 'error');
 
@@ -87,6 +54,75 @@ export const checkBudgets = (
     passed: !hasError,
     summary: hasError ? 'Budget exceeded!' : 'All budgets passed',
   };
+};
+
+/**
+ * 총 크기 예산 체크 (total, gzip, brotli)
+ */
+const checkTotalSizeBudgets = (
+  summary: AnalysisSummary,
+  options: BudgetOptions,
+  warnThreshold: number,
+  violations: BudgetViolation[],
+): void => {
+  if (options.totalSize) {
+    violations.push(
+      createViolation(
+        'total',
+        summary.totalSize,
+        options.totalSize * KB,
+        warnThreshold,
+      ),
+    );
+  }
+
+  if (options.gzipSize) {
+    violations.push(
+      createViolation(
+        'gzip',
+        summary.totalGzipSize,
+        options.gzipSize * KB,
+        warnThreshold,
+      ),
+    );
+  }
+
+  if (options.brotliSize) {
+    violations.push(
+      createViolation(
+        'brotli',
+        summary.totalBrotliSize,
+        options.brotliSize * KB,
+        warnThreshold,
+      ),
+    );
+  }
+};
+
+/**
+ * 개별 청크 크기 예산 체크
+ */
+const checkChunkSizeBudgets = (
+  suggestedGroups: ChunkGroup[],
+  options: BudgetOptions,
+  warnThreshold: number,
+  violations: BudgetViolation[],
+): void => {
+  if (!options.chunkSize) return;
+
+  const budget = options.chunkSize * KB;
+  for (const group of suggestedGroups) {
+    const violation = createViolation(
+      'chunk',
+      group.estimatedSize,
+      budget,
+      warnThreshold,
+      group.name,
+    );
+    if (violation.severity !== 'ok') {
+      violations.push(violation);
+    }
+  }
 };
 
 /**
