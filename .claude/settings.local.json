@@ -14,7 +14,21 @@
       "Bash(git init:*)",
       "Bash(git remote add:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(pnpm --filter chunk-analyzer tsc:*)",
+      "Bash(pnpm lint:*)",
+      "Bash(pnpm --filter chunk-analyzer build:*)",
+      "Bash(pnpm eslint:*)",
+      "Bash(done)",
+      "Bash(pnpm:*)",
+      "Bash(npx chunk-analyzer:*)",
+      "Bash(chunk-groups.config.ts.new)",
+      "Bash(DEVICE=mobile vite build:*)",
+      "Bash(wc:*)",
+      "Bash(npx eslint:*)",
+      "Bash(npx tsx:*)",
+      "Bash(git push:*)",
+      "Bash(git remote set-url:*)"
     ]
   }
 }
