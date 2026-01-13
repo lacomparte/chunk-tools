@@ -47,7 +47,8 @@ export const sharedQueryFactory = {
 };
 
 // Custom Hook으로 래핑
-export const useProduct = (id: string) => useQuery(sharedQueryFactory.product(id));
+export const useProduct = (id: string) =>
+  useQuery(sharedQueryFactory.product(id));
 ```
 
 ### 3. 에러/로딩 처리 (필수)
@@ -120,6 +121,13 @@ const S = {
 // transient props는 $ 접두사 필수
 <S.Button $isActive={true}>클릭</S.Button>
 ```
+
+### 7. 함수 길이 제한
+
+- **모든 함수는 25줄을 초과할 수 없음** (빈 줄, 주석 제외)
+- ESLint `max-lines-per-function` 규칙 적용됨
+- 25줄 초과 시 헬퍼 함수로 분리하여 단일 책임 원칙(SRP) 준수
+- 코드 작성 완료 후 lint 검사로 확인 권장
 
 ---
 

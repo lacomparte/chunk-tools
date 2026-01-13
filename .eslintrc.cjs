@@ -55,5 +55,11 @@ module.exports = {
         'import/no-default-export': 'off',
       },
     },
+    {
+      files: ['**/*.test.ts', '**/*.test.tsx', '**/*.spec.ts', '**/*.spec.tsx', '**/test/**/*.ts'],
+      rules: {
+        'max-lines-per-function': 'off',
+      },
+    },
   ],
 };
