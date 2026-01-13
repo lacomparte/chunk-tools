@@ -46,7 +46,9 @@
       "Bash(pnpm --filter vite-plugin-security build:*)",
       "Bash(rm:*)",
       "Bash(git fetch:*)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(npm publish:*)",
+      "Bash(npm whoami:*)"
     ]
   }
 }
