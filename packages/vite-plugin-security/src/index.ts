@@ -193,7 +193,7 @@ type ScannerContext = {
 };
 
 /**
- * WebSocket으로 이슈 전송
+ * WebSocket으로 이슈 전송 (개별 - 하위 호환성)
  */
 const sendIssueToOverlay = (
   server: ViteDevServer,
@@ -204,6 +204,26 @@ const sendIssueToOverlay = (
     type: 'custom',
     event: 'vite-security:issue',
     data,
+  });
+};
+
+/**
+ * 파일별 이슈 일괄 전송 (HMR 시 이슈 교체용)
+ */
+const sendFileIssuesToOverlay = (
+  server: ViteDevServer,
+  filePath: string,
+  issues: SecurityIssue[],
+  showOn: 'critical' | 'high' | 'all' = 'critical',
+): void => {
+  const reportableIssues = issues.filter((i) => shouldReportIssue(i, showOn));
+  server.ws.send({
+    type: 'custom',
+    event: 'vite-security:file-issues',
+    data: {
+      filePath,
+      issues: reportableIssues.map(issueToOverlayData),
+    },
   });
 };
 
@@ -310,9 +330,22 @@ const transformFile = (code: string, id: string, ctx: ScannerContext): null => {
   if (!shouldScanFile(id, ctx.options.exclude ?? [])) return null;
   ctx.scannedFiles.add(id);
   const issues = runScanners(code, id, ctx.options.rules);
+
+  // incremental 모드: 항상 파일별 이슈 전송 (이슈가 없어도 빈 배열 전송하여 기존 이슈 제거)
+  if (ctx.options.mode === 'incremental') {
+    // 콘솔 출력 (이슈가 있을 때만)
+    if (issues.length > 0) {
+      handleIncrementalIssue(issues, ctx);
+    }
+    // 오버레이 업데이트 (항상 - 이슈 해결 시 overlay에서 제거하기 위해)
+    if (ctx.server && ctx.options.overlay?.enabled) {
+      const showOn = ctx.options.overlay?.showOn ?? 'critical';
+      sendFileIssuesToOverlay(ctx.server, id, issues, showOn);
+    }
+  }
+
   if (issues.length > 0) {
     ctx.allIssues.push(...issues);
-    if (ctx.options.mode === 'incremental') handleIncrementalIssue(issues, ctx);
   }
   return null;
 };

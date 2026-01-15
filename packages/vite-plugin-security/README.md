@@ -6,6 +6,20 @@ Detects hardcoded secrets, RSC server code leaks, XSS vulnerabilities, and other
 
 > Vite 프로젝트를 위한 빌드 타임 보안 스캐너입니다. 하드코딩된 시크릿, RSC 서버 코드 노출, XSS 취약점 등 보안 이슈를 빌드 시점에 탐지합니다.
 
+## 스크린샷
+
+### CLI 리포트 (`mode: 'full'`)
+
+빌드 시 발견된 보안 이슈를 터미널에 상세하게 출력합니다.
+
+![CLI Security Report](./docs/images/cli-report.png)
+
+### HMR Overlay (`mode: 'incremental'`)
+
+개발 서버에서 실시간으로 보안 이슈를 브라우저에 표시합니다.
+
+![HMR Security Overlay](./docs/images/hmr-overlay.png)
+
 ## 설치
 
 ```bash

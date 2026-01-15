@@ -185,8 +185,8 @@ export const ISSUE_ITEM_TEMPLATE = `
  */
 export const OVERLAY_CLIENT_SCRIPT = `
 (function() {
-  // 보안 이슈 저장소
-  const securityIssues = [];
+  // 보안 이슈 저장소 (파일별 Map 구조로 변경)
+  const issuesByFile = new Map();
 
   // WebSocket 메시지 가로채기 - Vite가 생성하는 모든 WebSocket의 메시지 수신
   const OriginalWebSocket = window.WebSocket;
@@ -199,7 +199,11 @@ export const OVERLAY_CLIENT_SCRIPT = `
         try {
           const payload = JSON.parse(event.data);
           if (payload.type === 'custom' && payload.event === 'vite-security:issue') {
+            // 하위 호환성: 개별 이슈 추가
             addSecurityIssue(payload.data);
+          } else if (payload.type === 'custom' && payload.event === 'vite-security:file-issues') {
+            // 파일별 이슈 교체 (HMR용)
+            replaceFileIssues(payload.data.filePath, payload.data.issues);
           } else if (payload.type === 'custom' && payload.event === 'vite-security:clear') {
             clearSecurityOverlay();
           }
@@ -218,16 +222,37 @@ export const OVERLAY_CLIENT_SCRIPT = `
   window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
   window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
 
-  // 이슈 추가 및 오버레이 렌더링
-  function addSecurityIssue(issue) {
-    // 중복 체크 (같은 파일, 같은 라인, 같은 제목)
-    const isDuplicate = securityIssues.some(
-      (i) => i.filePath === issue.filePath && i.line === issue.line && i.title === issue.title
-    );
-    if (!isDuplicate) {
-      securityIssues.push(issue);
+  // 파일별 이슈 교체 (HMR 시 기존 이슈 제거 후 새 이슈로 교체)
+  function replaceFileIssues(filePath, issues) {
+    if (issues.length === 0) {
+      issuesByFile.delete(filePath);
+    } else {
+      issuesByFile.set(filePath, issues);
     }
     renderOverlay();
+  }
+
+  // 이슈 추가 (하위 호환성 - 개별 이슈 전송 시)
+  function addSecurityIssue(issue) {
+    const filePath = issue.filePath;
+    const existing = issuesByFile.get(filePath) || [];
+    // 중복 체크 (같은 라인, 같은 제목)
+    const isDuplicate = existing.some(
+      (i) => i.line === issue.line && i.title === issue.title
+    );
+    if (!isDuplicate) {
+      issuesByFile.set(filePath, [...existing, issue]);
+    }
+    renderOverlay();
+  }
+
+  // 모든 이슈를 배열로 변환
+  function getAllIssues() {
+    const all = [];
+    for (const issues of issuesByFile.values()) {
+      all.push(...issues);
+    }
+    return all;
   }
 
   // 오버레이 렌더링
@@ -239,10 +264,11 @@ export const OVERLAY_CLIENT_SCRIPT = `
         existing.remove();
       }
 
-      if (securityIssues.length === 0) return;
+      const allIssues = getAllIssues();
+      if (allIssues.length === 0) return;
 
       // 개별 이슈 HTML 생성
-      const issuesHtml = securityIssues.map((issue) => {
+      const issuesHtml = allIssues.map((issue) => {
         return ISSUE_ITEM_TEMPLATE
           .replace('{{title}}', escapeHtml(issue.title))
           .replace('{{severity}}', escapeHtml(issue.severity.toUpperCase()))
@@ -255,7 +281,7 @@ export const OVERLAY_CLIENT_SCRIPT = `
 
       // 전체 오버레이 HTML 생성
       const html = OVERLAY_TEMPLATE
-        .replace('{{count}}', securityIssues.length.toString())
+        .replace('{{count}}', allIssues.length.toString())
         .replace('{{issues}}', issuesHtml);
 
       // DOM에 삽입
@@ -269,7 +295,7 @@ export const OVERLAY_CLIENT_SCRIPT = `
   }
 
   function clearSecurityOverlay() {
-    securityIssues.length = 0;
+    issuesByFile.clear();
     const existing = document.getElementById('vite-security-overlay-wrapper');
     if (existing) {
       existing.remove();
